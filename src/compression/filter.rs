@@ -1,6 +1,8 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Deserialize;
+use std::sync::RwLock;
+use std::path::Path;
 
 /// Internal filter representation (after schema transformation)
 pub struct Filter {
@@ -23,6 +25,8 @@ pub struct Filter {
     pub max_lines: usize,
     pub preserve_head: usize,
     pub preserve_tail: usize,
+    pub source: String,         // "builtin" or "custom"
+    pub source_priority: i32,   // custom=100, builtin=50 (higher wins)
 }
 
 pub struct ReplaceRule {
@@ -144,10 +148,68 @@ struct RawPreserve {
 
 // ─── Filter loading and transformation ─────────────────────────────────────
 
-static FILTERS: Lazy<Vec<Filter>> = Lazy::new(|| {
+static BUILTIN_FILTERS: Lazy<Vec<Filter>> = Lazy::new(|| {
     let raw_json = include_str!("../../assets/all_filters.json");
-    let raw_filters: Vec<RawFilter> = serde_json::from_str(raw_json)
-        .expect("Failed to parse embedded filters JSON");
+    parse_raw_filters(raw_json, "builtin")
+});
+
+static CUSTOM_FILTERS: Lazy<RwLock<Vec<Filter>>> = Lazy::new(|| RwLock::new(Vec::new()));
+
+/// Combined filter registry: custom filters first (higher priority), then built-in.
+static COMBINED_FILTERS: Lazy<RwLock<Vec<Filter>>> = Lazy::new(|| {
+    let mut combined = Vec::new();
+    if let Ok(custom) = CUSTOM_FILTERS.read() {
+        combined.extend(custom.iter().map(|f| clone_filter(f)));
+    }
+    combined.extend(BUILTIN_FILTERS.iter().map(|f| clone_filter(f)));
+    // Sort: custom filters (higher source_priority) first, then by priority desc, then id asc
+    combined.sort_by(|a, b| {
+        b.source_priority.cmp(&a.source_priority)
+            .then(b.priority.cmp(&a.priority))
+            .then(a.id.cmp(&b.id))
+    });
+    RwLock::new(combined)
+});
+
+fn clone_filter(f: &Filter) -> Filter {
+    Filter {
+        id: f.id.clone(),
+        command_types: f.command_types.clone(),
+        command_patterns: f.command_patterns.clone(),
+        match_patterns: f.match_patterns.clone(),
+        priority: f.priority,
+        strip_ansi: f.strip_ansi,
+        replace: f.replace.iter().map(|r| ReplaceRule { pattern: r.pattern.clone(), replacement: r.replacement.clone() }).collect(),
+        match_output: f.match_output.iter().map(|r| MatchOutputRule { pattern: r.pattern.clone(), message: r.message.clone(), unless: r.unless.clone() }).collect(),
+        strip_patterns: f.strip_patterns.clone(),
+        keep_patterns: f.keep_patterns.clone(),
+        collapse_patterns: f.collapse_patterns.clone(),
+        priority_patterns: f.priority_patterns.clone(),
+        truncate_line_at: f.truncate_line_at,
+        on_empty: f.on_empty.clone(),
+        filter_stderr: f.filter_stderr,
+        deduplicate: f.deduplicate,
+        max_lines: f.max_lines,
+        preserve_head: f.preserve_head,
+        preserve_tail: f.preserve_tail,
+        source: f.source.clone(),
+        source_priority: f.source_priority,
+    }
+}
+
+fn parse_raw_filters(raw_json: &str, source: &str) -> Vec<Filter> {
+    let raw_filters: Vec<RawFilter> = match serde_json::from_str(raw_json) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[toksqz] Failed to parse filters from {}: {}", source, e);
+            return Vec::new();
+        }
+    };
+
+    let source_priority = match source {
+        "custom" => 100,
+        _ => 50,
+    };
 
     let mut filters: Vec<Filter> = raw_filters.into_iter().map(|raw| {
         // Detect if this is canonical (pack) format or legacy format
@@ -188,6 +250,8 @@ static FILTERS: Lazy<Vec<Filter>> = Lazy::new(|| {
                 max_lines: raw.rules.maxLines,
                 preserve_head: raw.rules.headLines,
                 preserve_tail: raw.rules.tailLines,
+                source: source.to_string(),
+                source_priority,
             }
         } else {
             // Legacy format
@@ -216,6 +280,8 @@ static FILTERS: Lazy<Vec<Filter>> = Lazy::new(|| {
                 max_lines: raw.maxLines.unwrap_or(0),
                 preserve_head: raw.preserveHead.unwrap_or(20),
                 preserve_tail: raw.preserveTail.unwrap_or(20),
+                source: source.to_string(),
+                source_priority,
             }
         }
     }).collect();
@@ -223,44 +289,182 @@ static FILTERS: Lazy<Vec<Filter>> = Lazy::new(|| {
     // Sort by priority (desc), then id (asc)
     filters.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.id.cmp(&b.id)));
     filters
-});
+}
 
-pub fn load_filters() -> &'static Vec<Filter> {
-    &FILTERS
+pub fn load_filters() -> usize {
+    Lazy::force(&BUILTIN_FILTERS);
+    // Load custom filters from TOKSQZ_FILTERS_DIR
+    load_custom_filters();
+    // Force rebuild combined filters
+    Lazy::force(&COMBINED_FILTERS);
+    COMBINED_FILTERS.read().map(|f| f.len()).unwrap_or(0)
+}
+
+/// Load custom filters from the directory specified by TOKSQZ_FILTERS_DIR env var.
+fn load_custom_filters() {
+    let dir = match std::env::var("TOKSQZ_FILTERS_DIR") {
+        Ok(d) if !d.is_empty() => d,
+        _ => return,
+    };
+
+    let path = Path::new(&dir);
+    if !path.is_dir() {
+        eprintln!("[toksqz] TOKSQZ_FILTERS_DIR '{}' is not a directory", dir);
+        return;
+    }
+
+    let mut custom_filters = Vec::new();
+    let entries = match std::fs::read_dir(path) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("[toksqz] Cannot read filters dir '{}': {}", dir, e);
+            return;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let entry_path = entry.path();
+        if entry_path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        match std::fs::read_to_string(&entry_path) {
+            Ok(content) => {
+                let parsed = parse_raw_filters(&content, "custom");
+                let fname = entry_path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
+                println!("[toksqz] Loaded {} custom filter(s) from {}", parsed.len(), fname);
+                custom_filters.extend(parsed);
+            }
+            Err(e) => {
+                eprintln!("[toksqz] Cannot read filter file '{}': {}", entry_path.display(), e);
+            }
+        }
+    }
+
+    if !custom_filters.is_empty() {
+        if let Ok(mut cf) = CUSTOM_FILTERS.write() {
+            *cf = custom_filters;
+        }
+        // Invalidate combined cache so it rebuilds
+        if let Ok(mut combined) = COMBINED_FILTERS.write() {
+            combined.clear();
+            if let Ok(custom) = CUSTOM_FILTERS.read() {
+                combined.extend(custom.iter().map(|f| clone_filter(f)));
+            }
+            combined.extend(BUILTIN_FILTERS.iter().map(|f| clone_filter(f)));
+            combined.sort_by(|a, b| {
+                b.source_priority.cmp(&a.source_priority)
+                    .then(b.priority.cmp(&a.priority))
+                    .then(a.id.cmp(&b.id))
+            });
+        }
+    }
 }
 
 /// Match filter: commandTypes → commandPatterns → matchPatterns → generic fallback
+/// Returns (matched filter, filter_id) or None.
 pub fn match_filter(text: &str, command: Option<&str>) -> Option<&'static Filter> {
+    match_filter_dyn(text, command)
+        .and_then(|idx| {
+            COMBINED_FILTERS.read().ok().and_then(|filters| {
+                // SAFETY: We return a reference into the Lazy static which lives for 'static
+                let ptr = &filters[idx] as *const Filter;
+                Some(unsafe { &*ptr })
+            })
+        })
+}
+
+/// Dynamic match returning the index into COMBINED_FILTERS.
+fn match_filter_dyn(text: &str, command: Option<&str>) -> Option<usize> {
     use crate::compression::command_detector::detect_command_type;
 
     let detection = detect_command_type(text, command);
     let detected_command = detection.command.as_deref().unwrap_or("");
 
+    let filters = COMBINED_FILTERS.read().ok()?;
+
     // 1. Match by command type (outputTypes)
-    if let Some(f) = FILTERS.iter().find(|f| f.command_types.contains(&detection.command_type)) {
-        return Some(f);
+    if let Some(idx) = filters.iter().position(|f| f.command_types.contains(&detection.command_type)) {
+        return Some(idx);
     }
 
     // 2. Match by command patterns (regex on command string)
     if !detected_command.is_empty() {
-        if let Some(f) = FILTERS.iter().find(|f| {
+        if let Some(idx) = filters.iter().position(|f| {
             f.command_patterns.iter().any(|p| {
                 Regex::new(p).map_or(false, |re| re.is_match(detected_command))
             })
         }) {
-            return Some(f);
+            return Some(idx);
         }
     }
 
     // 3. Match by match patterns (regex on full text)
-    if let Some(f) = FILTERS.iter().find(|f| {
+    if let Some(idx) = filters.iter().position(|f| {
         f.match_patterns.iter().any(|p| {
             Regex::new(&format!("(?im){}", p)).map_or(false, |re| re.is_match(text))
         })
     }) {
-        return Some(f);
+        return Some(idx);
     }
 
     // 4. Fallback to generic-output
-    FILTERS.iter().find(|f| f.command_types.contains(&"generic-output".to_string()))
+    filters.iter().position(|f| f.command_types.contains(&"generic-output".to_string()))
+}
+
+/// Return the filter ID for the currently matched filter (for stats headers).
+#[allow(dead_code)]
+pub fn matched_filter_id(text: &str, command: Option<&str>) -> Option<String> {
+    match_filter_dyn(text, command).and_then(|idx| {
+        COMBINED_FILTERS.read().ok().map(|filters| filters[idx].id.clone())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_builtin_filters_load() {
+        let filters = &*BUILTIN_FILTERS;
+        assert!(!filters.is_empty(), "Built-in filters should not be empty");
+        // Should have at least git-status, git-diff, etc.
+        let ids: Vec<&str> = filters.iter().map(|f| f.id.as_str()).collect();
+        assert!(ids.contains(&"git-status"));
+        assert!(ids.contains(&"git-diff"));
+        assert!(ids.contains(&"test-cargo"));
+    }
+
+    #[test]
+    fn test_match_filter_git_status() {
+        let text = "On branch main\nChanges not staged for commit:\n  modified: src/app.ts";
+        let result = match_filter(text, Some("git status"));
+        assert!(result.is_some());
+        let f = result.unwrap();
+        assert_eq!(f.id, "git-status");
+    }
+
+    #[test]
+    fn test_match_filter_fallback_to_generic() {
+        let text = "Some random text with no special format";
+        let result = match_filter(text, None);
+        // Should fallback to generic-output
+        if let Some(f) = result {
+            assert_eq!(f.id, "generic-output");
+        }
+    }
+
+    #[test]
+    fn test_parse_raw_filters_invalid_json() {
+        let filters = parse_raw_filters("not valid json", "test");
+        assert!(filters.is_empty());
+    }
+
+    #[test]
+    fn test_filter_source_tracking() {
+        let filters = &*BUILTIN_FILTERS;
+        for f in filters {
+            assert_eq!(f.source, "builtin");
+            assert_eq!(f.source_priority, 50);
+        }
+    }
 }

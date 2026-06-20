@@ -906,20 +906,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "squeeze-proxy"
-version = "0.1.0"
-dependencies = [
- "axum",
- "futures-util",
- "once_cell",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1054,6 +1040,20 @@ dependencies = [
  "futures-core",
  "futures-sink",
  "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
+name = "toksqz"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "once_cell",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 

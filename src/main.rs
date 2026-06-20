@@ -11,6 +11,8 @@ pub struct Config {
     pub rtk_enabled: bool,
     pub caveman_level: Option<String>,
     pub log_enabled: bool,
+    pub grouping_enabled: bool,
+    pub stats_enabled: bool,
 }
 
 impl Config {
@@ -33,7 +35,9 @@ impl Config {
             ),
         };
         let log_enabled = std::env::var("SQUEEZE_LOG").unwrap_or_else(|_| "true".into()) != "false";
-        Config { upstream, port, rtk_enabled, caveman_level, log_enabled }
+        let grouping_enabled = std::env::var("SQUEEZE_GROUPING").unwrap_or_else(|_| "true".into()) != "false";
+        let stats_enabled = std::env::var("SQUEEZE_STATS").unwrap_or_else(|_| "true".into()) != "false";
+        Config { upstream, port, rtk_enabled, caveman_level, log_enabled, grouping_enabled, stats_enabled }
     }
 }
 
@@ -46,6 +50,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/health", get(proxy::health))
+        .route("/stats", get(proxy::stats))
         .route("/", get(proxy::health))
         .fallback(any(proxy::handle))
         .with_state(config.clone());

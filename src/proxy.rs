@@ -19,6 +19,8 @@ static CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
 struct CompressResult {
     original_tokens: usize,
     compressed_tokens: usize,
+    filters_applied: Vec<String>,
+    per_command: Vec<compression::stats::CommandStats>,
 }
 
 pub async fn health(State(config): State<Config>) -> impl IntoResponse {
@@ -30,6 +32,45 @@ pub async fn health(State(config): State<Config>) -> impl IntoResponse {
             "upstream": config.upstream,
             "rtk": config.rtk_enabled,
             "caveman": config.caveman_level.as_deref().unwrap_or("off"),
+            "grouping": config.grouping_enabled,
+            "stats": config.stats_enabled,
+        })
+        .to_string(),
+    )
+}
+
+pub async fn stats(State(config): State<Config>) -> impl IntoResponse {
+    if !config.stats_enabled {
+        return (
+            StatusCode::NOT_FOUND,
+            [("content-type", "application/json")],
+            "{\"error\":\"stats disabled\"}".to_string(),
+        );
+    }
+    let summary = compression::stats::get_summary();
+    let filter_hits: Vec<serde_json::Value> = summary.filter_hits.iter()
+        .take(20)
+        .map(|(id, count)| serde_json::json!({"filter": id, "hits": count}))
+        .collect();
+    let command_hits: Vec<serde_json::Value> = summary.command_hits.iter()
+        .take(20)
+        .map(|h| serde_json::json!({
+            "command_type": h.command_type,
+            "hits": h.hits,
+            "saved_tokens": h.saved_tokens,
+        }))
+        .collect();
+    (
+        StatusCode::OK,
+        [("content-type", "application/json")],
+        serde_json::json!({
+            "total_requests": summary.total_requests,
+            "total_original_tokens": summary.total_original_tokens,
+            "total_compressed_tokens": summary.total_compressed_tokens,
+            "total_saved_tokens": summary.total_saved_tokens,
+            "avg_savings_pct": format!("{:.1}", summary.avg_savings_pct),
+            "top_filters": filter_hits,
+            "top_commands": command_hits,
         })
         .to_string(),
     )
@@ -152,6 +193,24 @@ pub async fn handle(
             "x-squeeze-compressed-tokens",
             r.compressed_tokens.to_string().parse().unwrap(),
         );
+        // Extended stats headers
+        if !r.filters_applied.is_empty() {
+            let filters_str = r.filters_applied.join(",");
+            if let Ok(val) = filters_str.parse() {
+                response_headers.insert("x-toksqz-filters-applied", val);
+            }
+        }
+        if !r.per_command.is_empty() {
+            let per_cmd_str: Vec<String> = r.per_command.iter()
+                .map(|c| format!("{}:{}->{},", c.command_type, c.original_tokens, c.compressed_tokens))
+                .collect();
+            let joined: String = per_cmd_str.join("");
+            // Truncate header to 8KB max
+            let truncated = if joined.len() > 8192 { &joined[..8192] } else { &joined };
+            if let Ok(val) = truncated.parse() {
+                response_headers.insert("x-toksqz-per-command", val);
+            }
+        }
     }
 
     let status = StatusCode::from_u16(upstream_resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -184,6 +243,8 @@ fn compress_messages(payload: &mut Value, config: &Config) -> Option<CompressRes
     let messages = payload.get_mut("messages")?.as_array_mut()?;
     let mut original_tokens: usize = 0;
     let mut compressed_tokens: usize = 0;
+    let mut filters_applied: Vec<String> = Vec::new();
+    let mut per_command: Vec<compression::stats::CommandStats> = Vec::new();
 
     for msg in messages.iter_mut() {
         let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
@@ -197,17 +258,33 @@ fn compress_messages(payload: &mut Value, config: &Config) -> Option<CompressRes
 
         // RTK: compress tool output
         if config.rtk_enabled && role == "tool" {
-            let compressed = compression::rtk_compress(&content);
-            let new_tokens = estimate_tokens(&compressed);
-            if config.log_enabled && compressed.len() < content.len() {
+            let result = compression::rtk_compress_full(&content);
+            let new_tokens = estimate_tokens(&result.text);
+            if config.log_enabled && result.text.len() < content.len() {
                 println!(
-                    "  [RTK] {}→{} chars",
+                    "  [RTK] {}→{} chars{}{}",
                     content.len(),
-                    compressed.len()
+                    result.text.len(),
+                    if let Some(ref fid) = result.filter_id { format!(" ({})", fid) } else { String::new() },
+                    if result.grouping_applied { " [grouped]" } else { "" },
                 );
             }
+            // Record stats
+            let filter_id = result.filter_id.clone().unwrap_or_else(|| "none".to_string());
+            compression::stats::record_message(&filter_id, &result.command_type, orig, new_tokens);
+            if let Some(ref fid) = result.filter_id {
+                if !filters_applied.contains(fid) {
+                    filters_applied.push(fid.clone());
+                }
+            }
+            per_command.push(compression::stats::CommandStats {
+                command_type: result.command_type.clone(),
+                filter_id: filter_id,
+                original_tokens: orig,
+                compressed_tokens: new_tokens,
+            });
             compressed_tokens += new_tokens;
-            msg["content"] = Value::String(compressed);
+            msg["content"] = Value::String(result.text);
             continue;
         }
 
@@ -232,5 +309,5 @@ fn compress_messages(payload: &mut Value, config: &Config) -> Option<CompressRes
         compressed_tokens += orig;
     }
 
-    Some(CompressResult { original_tokens, compressed_tokens })
+    Some(CompressResult { original_tokens, compressed_tokens, filters_applied, per_command })
 }
