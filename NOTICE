@@ -1,0 +1,128 @@
+NOTICE
+======
+
+This project includes compression logic derived from the following open-source projects:
+
+1. RTK (Rust Token Killer)
+   - Original project: https://github.com/rtk-ai/rtk
+   - License: Apache License 2.0
+   - Copyright: RTK contributors
+   - Changes: Adapted RTK filter matching, command detection, line filtering,
+     deduplication, and smart truncation logic into a library-internal Rust module.
+
+2. Caveman
+   - Original project: https://github.com/JuliusBrussee/caveman
+   - License: MIT
+   - Copyright: JuliusBrussee
+   - Changes: Ported Caveman rule-based filler removal engine to Rust with
+     intensity and context filtering.
+
+The Apache 2.0 license text for RTK is included below as required by Section 4(d).
+
+---
+
+Apache License
+Version 2.0, January 2004
+http://www.apache.org/licenses/
+
+TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+1. Definitions.
+
+"License" shall mean the terms and conditions for use, reproduction, and
+distribution as defined by Sections 1 through 9 of this document.
+
+"Licensor" shall mean the copyright owner or entity authorized by the copyright
+owner that is granting the License.
+
+"Legal Entity" shall mean the union of the acting entity and all other entities
+that control, are controlled by, or are under common control with that entity.
+
+"You" (or "Your") shall mean an individual or Legal Entity exercising
+permissions granted by this License.
+
+"Source" form shall mean the preferred form for making modifications, including
+but not limited to software source code, documentation source, and configuration
+files.
+
+"Object" form shall mean any form resulting from mechanical transformation or
+translation of a Source form, including but not limited to compiled object code,
+generated documentation, and conversions to other media types.
+
+"Work" shall mean the work of authorship, whether in Source or Object form, made
+available under the License.
+
+"Derivative Works" shall mean any work, whether in Source or Object form, that
+is based on (or derived from) the Work.
+
+"Contribution" shall mean any work of authorship submitted to the Licensor for
+inclusion in the Work.
+
+"Contributor" shall mean Licensor and any Legal Entity on behalf of whom a
+Contribution has been received by the Licensor.
+
+2. Grant of Copyright License. Subject to the terms and conditions of this
+License, each Contributor hereby grants to You a perpetual, worldwide,
+non-exclusive, no-charge, royalty-free, irrevocable copyright license to
+reproduce, prepare Derivative Works of, publicly display, publicly perform,
+sublicense, and distribute the Work and such Derivative Works in Source or
+Object form.
+
+3. Grant of Patent License. Subject to the terms and conditions of this License,
+each Contributor hereby grants to You a perpetual, worldwide, non-exclusive,
+no-charge, royalty-free, irrevocable patent license to make, have made, use,
+offer to sell, sell, import, and otherwise transfer the Work.
+
+4. Redistribution. You may reproduce and distribute copies of the Work or
+Derivative Works thereof in any medium, with or without modifications, and in
+Source or Object form, provided that You meet the following conditions:
+
+(a) You must give any other recipients of the Work or Derivative Works a copy of
+this License; and
+
+(b) You must cause any modified files to carry prominent notices stating that You
+changed the files; and
+
+(c) You must retain, in the Source form of any Derivative Works that You
+distribute, all copyright, patent, trademark, and attribution notices from the
+Source form of the Work; and
+
+(d) If the Work includes a "NOTICE" text file as part of its distribution, then
+any Derivative Works that You distribute must include a readable copy of the
+attribution notices contained within such NOTICE file.
+
+5. Submission of Contributions.
+
+6. Trademarks. This License does not grant permission to use the trade names,
+trademarks, service marks, or product names of the Licensor.
+
+7. Disclaimer of Warranty.
+
+8. Limitation of Liability.
+
+9. Accepting Warranty or Additional Liability.
+
+END OF TERMS AND CONDITIONS
+
+---
+
+声明
+====
+
+本项目包含以下开源项目的衍生压缩逻辑：
+
+1. RTK（Rust Token Killer）
+   - 原项目：https://github.com/rtk-ai/rtk
+   - 许可证：Apache License 2.0
+   - 版权方：RTK 贡献者
+   - 修改说明：将 RTK 的过滤器匹配、命令检测、行过滤、去重和智能截断
+     逻辑移植为库内部 Rust 模块。
+
+2. Caveman
+   - 原项目：https://github.com/JuliusBrussee/caveman
+   - 许可证：MIT
+   - 版权方：JuliusBrussee
+   - 修改说明：将 Caveman 基于规则的填充词删除引擎移植为 Rust，
+     支持强度和上下文过滤。
+
+根据 Apache 2.0 第 4(d) 条要求，上方已包含 RTK 的 Apache 2.0 许可证全文。

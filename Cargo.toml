@@ -1,7 +1,10 @@
 [package]
-name = "squeeze-proxy"
+name = "toksqz"
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0"
+description = "Lightweight Rust proxy for LLM prompt compression (RTK + Caveman)"
+repository = "https://github.com/baicai-1145/toksqz"
 
 [dependencies]
 axum = { version = "0.7", default-features = false, features = ["http1", "tokio"] }
