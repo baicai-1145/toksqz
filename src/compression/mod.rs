@@ -7,11 +7,35 @@ pub mod caveman;
 pub mod grouping;
 pub mod stats;
 
+use once_cell::sync::Lazy;
+use regex::Regex;
+
 pub fn init() {
     let count = filter::load_filters();
     println!("[toksqz] Loaded {} filters", count);
     caveman::load_rules();
+    // Pre-cache env vars and regex at init time
+    Lazy::force(&GROUPING_ENABLED);
+    Lazy::force(&GROUPING_LEVEL);
+    Lazy::force(&TRUNCATE_PRIORITY_RE);
 }
+
+/// Cached env: SQUEEZE_GROUPING
+static GROUPING_ENABLED: Lazy<bool> = Lazy::new(|| {
+    std::env::var("SQUEEZE_GROUPING")
+        .unwrap_or_else(|_| "true".into()) != "false"
+});
+
+/// Cached env: SQUEEZE_GROUPING_LEVEL
+static GROUPING_LEVEL: Lazy<String> = Lazy::new(|| {
+    std::env::var("SQUEEZE_GROUPING_LEVEL")
+        .unwrap_or_else(|_| "lite".into())
+});
+
+/// Pre-compiled priority pattern for truncation (used in every compress call)
+static TRUNCATE_PRIORITY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)error|failed|exception|traceback|TS\d{4}|FAIL|\x{2716}").unwrap()
+});
 
 /// Result of RTK compression with detailed stats.
 pub struct RtkCompressResult {
@@ -35,7 +59,6 @@ pub fn rtk_compress_full(text: &str) -> RtkCompressResult {
     use dedup::deduplicate_lines;
     use truncate::smart_truncate;
     use grouping::apply_grouping;
-    use regex::Regex;
 
     // Detect command type
     let detection = detect_command_type(text, None);
@@ -52,15 +75,10 @@ pub fn rtk_compress_full(text: &str) -> RtkCompressResult {
         result = filtered.text;
     }
 
-    // Apply grouping (controlled by env SQUEEZE_GROUPING, default: true)
-    let grouping_enabled = std::env::var("SQUEEZE_GROUPING")
-        .unwrap_or_else(|_| "true".into()) != "false";
-    let grouping_level = std::env::var("SQUEEZE_GROUPING_LEVEL")
-        .unwrap_or_else(|_| "lite".into());
-
+    // Apply grouping (cached env vars)
     let mut grouping_applied = false;
-    if grouping_enabled {
-        let grouped = apply_grouping(&result, &command_type, &grouping_level);
+    if *GROUPING_ENABLED {
+        let grouped = apply_grouping(&result, &command_type, &GROUPING_LEVEL);
         if grouped.applied {
             result = grouped.text;
             grouping_applied = true;
@@ -71,10 +89,8 @@ pub fn rtk_compress_full(text: &str) -> RtkCompressResult {
     let deduped = deduplicate_lines(&result, 3);
     result = deduped.text;
 
-    // Smart truncate (120 lines, 12000 chars)
-    let priority_patterns: Vec<Regex> = vec![
-        Regex::new(r"(?i)error|failed|exception|traceback|TS\d{4}|FAIL|✖").unwrap(),
-    ];
+    // Smart truncate (120 lines, 12000 chars) - use pre-compiled regex
+    let priority_patterns = [&*TRUNCATE_PRIORITY_RE];
     let truncated = smart_truncate(&result, 120, 12000, 24, 24, &priority_patterns);
     result = truncated.text;
 

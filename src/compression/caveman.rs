@@ -87,12 +87,19 @@ pub fn compress(text: &str, role: &str, level: &str) -> String {
             continue;
         }
 
+        // Skip if no match (avoids allocation)
+        if !rule.pattern.is_match(&result) {
+            continue;
+        }
+
         result = rule.pattern.replace_all(&result, rule.replacement.as_str()).to_string();
     }
 
     // Clean up multiple spaces
     static MULTI_SPACE: Lazy<Regex> = Lazy::new(|| Regex::new(r"  +").unwrap());
-    result = MULTI_SPACE.replace_all(&result, " ").to_string();
+    if MULTI_SPACE.is_match(&result) {
+        result = MULTI_SPACE.replace_all(&result, " ").to_string();
+    }
 
     // Clean up leading/trailing whitespace per line
     result = result.lines()

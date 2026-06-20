@@ -31,6 +31,23 @@ struct Detector {
     content_patterns: &'static [&'static str],
 }
 
+/// Pre-compiled regex cache for all detector patterns
+static COMPILED_COMMAND_PATTERNS: Lazy<Vec<Vec<Regex>>> = Lazy::new(|| {
+    DETECTORS.iter().map(|d| {
+        d.command_patterns.iter()
+            .filter_map(|p| Regex::new(p).ok())
+            .collect()
+    }).collect()
+});
+
+static COMPILED_CONTENT_PATTERNS: Lazy<Vec<Vec<Regex>>> = Lazy::new(|| {
+    DETECTORS.iter().map(|d| {
+        d.content_patterns.iter()
+            .filter_map(|p| Regex::new(p).ok())
+            .collect()
+    }).collect()
+});
+
 static DETECTORS: &[Detector] = &[
     Detector { detector_type: "git-status", category: "git",
         command_patterns: &[r"(?i)^git\s+status\b"],
@@ -205,19 +222,16 @@ pub fn detect_command_type(text: &str, command: Option<&str>) -> CommandDetectio
 
     let mut best: Option<CommandDetectionResult> = None;
 
-    for detector in DETECTORS {
+    for (i, detector) in DETECTORS.iter().enumerate() {
         let command_matched = if let Some(ref cmd) = detected_command {
-            detector.command_patterns.iter().any(|p| {
-                Regex::new(p).map_or(false, |re| re.is_match(cmd))
-            })
+            COMPILED_COMMAND_PATTERNS[i].iter().any(|re| re.is_match(cmd))
         } else {
             false
         };
 
-        let content_matches: usize = detector
-            .content_patterns
+        let content_matches: usize = COMPILED_CONTENT_PATTERNS[i]
             .iter()
-            .filter(|p| Regex::new(p).map_or(false, |re| re.is_match(text)))
+            .filter(|re| re.is_match(text))
             .count();
 
         if !command_matched && content_matches == 0 {

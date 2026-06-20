@@ -27,6 +27,13 @@ pub struct Filter {
     pub preserve_tail: usize,
     pub source: String,         // "builtin" or "custom"
     pub source_priority: i32,   // custom=100, builtin=50 (higher wins)
+    // Pre-compiled regexes (populated after loading)
+    pub compiled_strip: Vec<Regex>,
+    pub compiled_keep: Vec<Regex>,
+    pub compiled_collapse: Vec<Regex>,
+    pub compiled_priority: Vec<Regex>,
+    pub compiled_replace: Vec<Option<Regex>>,
+    pub compiled_match_output: Vec<(Regex, Option<Regex>)>,
 }
 
 pub struct ReplaceRule {
@@ -171,6 +178,28 @@ static COMBINED_FILTERS: Lazy<RwLock<Vec<Filter>>> = Lazy::new(|| {
     RwLock::new(combined)
 });
 
+/// Pre-compiled regex cache for filter command_patterns (index-aligned with COMBINED_FILTERS)
+static COMPILED_FILTER_CMD_PATTERNS: Lazy<RwLock<Vec<Vec<Regex>>>> = Lazy::new(|| {
+    let filters = COMBINED_FILTERS.read().unwrap();
+    let compiled: Vec<Vec<Regex>> = filters.iter().map(|f| {
+        f.command_patterns.iter()
+            .filter_map(|p| Regex::new(p).ok())
+            .collect()
+    }).collect();
+    RwLock::new(compiled)
+});
+
+/// Pre-compiled regex cache for filter match_patterns (index-aligned with COMBINED_FILTERS)
+static COMPILED_FILTER_MATCH_PATTERNS: Lazy<RwLock<Vec<Vec<Regex>>>> = Lazy::new(|| {
+    let filters = COMBINED_FILTERS.read().unwrap();
+    let compiled: Vec<Vec<Regex>> = filters.iter().map(|f| {
+        f.match_patterns.iter()
+            .filter_map(|p| Regex::new(&format!("(?im){}", p)).ok())
+            .collect()
+    }).collect();
+    RwLock::new(compiled)
+});
+
 fn clone_filter(f: &Filter) -> Filter {
     Filter {
         id: f.id.clone(),
@@ -194,7 +223,39 @@ fn clone_filter(f: &Filter) -> Filter {
         preserve_tail: f.preserve_tail,
         source: f.source.clone(),
         source_priority: f.source_priority,
+        compiled_strip: f.compiled_strip.clone(),
+        compiled_keep: f.compiled_keep.clone(),
+        compiled_collapse: f.compiled_collapse.clone(),
+        compiled_priority: f.compiled_priority.clone(),
+        compiled_replace: f.compiled_replace.clone(),
+        compiled_match_output: f.compiled_match_output.clone(),
     }
+}
+
+/// Compile all regex patterns in a Filter into pre-compiled fields
+fn compile_filter_regexes(f: &mut Filter) {
+    f.compiled_strip = f.strip_patterns.iter()
+        .filter_map(|p| Regex::new(&format!("(?i){}", p)).ok())
+        .collect();
+    f.compiled_keep = f.keep_patterns.iter()
+        .filter_map(|p| Regex::new(&format!("(?i){}", p)).ok())
+        .collect();
+    f.compiled_collapse = f.collapse_patterns.iter()
+        .filter_map(|p| Regex::new(&format!("(?i){}", p)).ok())
+        .collect();
+    f.compiled_priority = f.priority_patterns.iter()
+        .filter_map(|p| Regex::new(&format!("(?i){}", p)).ok())
+        .collect();
+    f.compiled_replace = f.replace.iter()
+        .map(|r| Regex::new(&r.pattern).ok())
+        .collect();
+    f.compiled_match_output = f.match_output.iter()
+        .map(|r| {
+            let pat = Regex::new(&format!("(?im){}", r.pattern)).ok();
+            let unless = r.unless.as_ref().and_then(|u| Regex::new(&format!("(?im){}", u)).ok());
+            (pat.unwrap_or_else(|| Regex::new("(?!)" ).unwrap()), unless)
+        })
+        .collect();
 }
 
 fn parse_raw_filters(raw_json: &str, source: &str) -> Vec<Filter> {
@@ -220,7 +281,7 @@ fn parse_raw_filters(raw_json: &str, source: &str) -> Vec<Filter> {
             || !raw.rules.includePatterns.is_empty()
             || raw.rules.stripAnsi;
 
-        if is_canonical {
+        let mut f = if is_canonical {
             let preserve_patterns: Vec<String> = [
                 raw.preserve.errorPatterns.as_slice(),
                 raw.preserve.summaryPatterns.as_slice(),
@@ -252,6 +313,12 @@ fn parse_raw_filters(raw_json: &str, source: &str) -> Vec<Filter> {
                 preserve_tail: raw.rules.tailLines,
                 source: source.to_string(),
                 source_priority,
+                compiled_strip: vec![],
+                compiled_keep: vec![],
+                compiled_collapse: vec![],
+                compiled_priority: vec![],
+                compiled_replace: vec![],
+                compiled_match_output: vec![],
             }
         } else {
             // Legacy format
@@ -282,8 +349,18 @@ fn parse_raw_filters(raw_json: &str, source: &str) -> Vec<Filter> {
                 preserve_tail: raw.preserveTail.unwrap_or(20),
                 source: source.to_string(),
                 source_priority,
+                compiled_strip: vec![],
+                compiled_keep: vec![],
+                compiled_collapse: vec![],
+                compiled_priority: vec![],
+                compiled_replace: vec![],
+                compiled_match_output: vec![],
             }
-        }
+        };
+        
+        // Pre-compile all regex patterns
+        compile_filter_regexes(&mut f);
+        f
     }).collect();
 
     // Sort by priority (desc), then id (asc)
@@ -381,6 +458,8 @@ fn match_filter_dyn(text: &str, command: Option<&str>) -> Option<usize> {
     let detected_command = detection.command.as_deref().unwrap_or("");
 
     let filters = COMBINED_FILTERS.read().ok()?;
+    let cmd_patterns = COMPILED_FILTER_CMD_PATTERNS.read().ok()?;
+    let match_patterns = COMPILED_FILTER_MATCH_PATTERNS.read().ok()?;
 
     // 1. Match by command type (outputTypes)
     if let Some(idx) = filters.iter().position(|f| f.command_types.contains(&detection.command_type)) {
@@ -389,20 +468,16 @@ fn match_filter_dyn(text: &str, command: Option<&str>) -> Option<usize> {
 
     // 2. Match by command patterns (regex on command string)
     if !detected_command.is_empty() {
-        if let Some(idx) = filters.iter().position(|f| {
-            f.command_patterns.iter().any(|p| {
-                Regex::new(p).map_or(false, |re| re.is_match(detected_command))
-            })
+        if let Some(idx) = filters.iter().enumerate().position(|(i, _f)| {
+            cmd_patterns[i].iter().any(|re| re.is_match(detected_command))
         }) {
             return Some(idx);
         }
     }
 
     // 3. Match by match patterns (regex on full text)
-    if let Some(idx) = filters.iter().position(|f| {
-        f.match_patterns.iter().any(|p| {
-            Regex::new(&format!("(?im){}", p)).map_or(false, |re| re.is_match(text))
-        })
+    if let Some(idx) = filters.iter().enumerate().position(|(i, _f)| {
+        match_patterns[i].iter().any(|re| re.is_match(text))
     }) {
         return Some(idx);
     }

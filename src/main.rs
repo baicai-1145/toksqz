@@ -1,5 +1,5 @@
 mod proxy;
-mod compression;
+use toksqz::compression;
 
 use std::net::SocketAddr;
 use axum::{Router, routing::{get, any}};

@@ -1,5 +1,3 @@
-use std::sync::RwLock;
-use std::collections::HashMap;
 use once_cell::sync::Lazy;
 use regex::Regex;
 
@@ -9,32 +7,6 @@ use super::truncate::smart_truncate;
 pub struct LineFilterResult {
     pub text: String,
     pub stripped_lines: usize,
-}
-
-// ─── Regex cache ───────────────────────────────────────────────────────────
-
-static REGEX_CACHE: Lazy<RwLock<HashMap<String, Option<Regex>>>> =
-    Lazy::new(|| RwLock::new(HashMap::new()));
-
-fn cached_regex(pattern: &str, flags: &str) -> Option<Regex> {
-    let key = format!("{}::{}", pattern, flags);
-    {
-        let cache = REGEX_CACHE.read().unwrap();
-        if let Some(entry) = cache.get(&key) {
-            return entry.clone();
-        }
-    }
-    let result = Regex::new(&format!("(?{}){}", flags, pattern)).ok();
-    let mut cache = REGEX_CACHE.write().unwrap();
-    cache.insert(key, result.clone());
-    result
-}
-
-fn compile_patterns(patterns: &[String], flags: &str) -> Vec<Regex> {
-    patterns
-        .iter()
-        .filter_map(|p| cached_regex(p, flags))
-        .collect()
 }
 
 fn strip_ansi(text: &str) -> String {
@@ -55,23 +27,19 @@ fn truncate_unicode_safe(line: &str, max_chars: usize) -> String {
     if max_chars == 0 {
         return line.to_string();
     }
-    let chars: Vec<char> = line.chars().collect();
-    if chars.len() <= max_chars {
+    let char_count = line.chars().count();
+    if char_count <= max_chars {
         return line.to_string();
     }
     if max_chars <= 3 {
-        return chars[..max_chars].iter().collect();
+        return line.chars().take(max_chars).collect();
     }
-    let truncated: String = chars[..max_chars - 3].iter().collect();
+    let truncated: String = line.chars().take(max_chars - 3).collect();
     format!("{}...", truncated)
 }
 
 pub fn apply_line_filter(text: &str, filter: &Filter) -> LineFilterResult {
-    let strip_patterns = compile_patterns(&filter.strip_patterns, "i");
-    let keep_patterns = compile_patterns(&filter.keep_patterns, "i");
-    let collapse_patterns = compile_patterns(&filter.collapse_patterns, "i");
-    let priority_patterns = compile_patterns(&filter.priority_patterns, "i");
-
+    // Use pre-compiled regexes from the Filter struct — no HashMap/RwLock overhead
     let mut lines: Vec<String> = text.split("\r\n").flat_map(|l| l.split('\n'))
         .map(|s| s.to_string())
         .collect();
@@ -87,47 +55,43 @@ pub fn apply_line_filter(text: &str, filter: &Filter) -> LineFilterResult {
         lines = lines.iter().map(|l| normalize_stderr_prefix(l)).collect();
     }
 
-    // Replace rules
-    for rule in &filter.replace {
-        if let Some(re) = cached_regex(&rule.pattern, "g") {
+    // Replace rules (use pre-compiled)
+    for (i, rule) in filter.replace.iter().enumerate() {
+        if let Some(ref re) = filter.compiled_replace.get(i).and_then(|r| r.as_ref()) {
             lines = lines.iter().map(|l| re.replace_all(l, rule.replacement.as_str()).to_string()).collect();
         }
     }
 
-    // Match-output short-circuit
+    // Match-output short-circuit (use pre-compiled)
     if !filter.match_output.is_empty() {
         let blob = lines.join("\n");
-        for rule in &filter.match_output {
-            let pattern_re = match cached_regex(&rule.pattern, "im") {
-                Some(re) => re,
-                None => continue,
-            };
-            if !pattern_re.is_match(&blob) {
-                continue;
-            }
-            if let Some(ref unless_str) = rule.unless {
-                if let Some(unless_re) = cached_regex(unless_str, "im") {
-                    if unless_re.is_match(&blob) {
+        for (i, rule) in filter.match_output.iter().enumerate() {
+            if let Some((ref pat_re, ref unless_re)) = filter.compiled_match_output.get(i) {
+                if !pat_re.is_match(&blob) {
+                    continue;
+                }
+                if let Some(ref unless) = unless_re {
+                    if unless.is_match(&blob) {
                         continue;
                     }
                 }
+                return LineFilterResult {
+                    text: rule.message.clone(),
+                    stripped_lines: original_line_count.saturating_sub(1),
+                };
             }
-            return LineFilterResult {
-                text: rule.message.clone(),
-                stripped_lines: original_line_count.saturating_sub(1),
-            };
         }
     }
 
-    // Strip (drop) patterns
-    if !strip_patterns.is_empty() {
-        lines.retain(|line| !strip_patterns.iter().any(|p| p.is_match(line)));
+    // Strip (drop) patterns (use pre-compiled)
+    if !filter.compiled_strip.is_empty() {
+        lines.retain(|line| !filter.compiled_strip.iter().any(|p| p.is_match(line)));
     }
 
-    // Keep (include) patterns — only if something matches
-    if !keep_patterns.is_empty() {
+    // Keep (include) patterns — only if something matches (use pre-compiled)
+    if !filter.compiled_keep.is_empty() {
         let kept: Vec<String> = lines.iter()
-            .filter(|line| keep_patterns.iter().any(|p| p.is_match(line)))
+            .filter(|line| filter.compiled_keep.iter().any(|p| p.is_match(line)))
             .cloned()
             .collect();
         if !kept.is_empty() {
@@ -135,11 +99,11 @@ pub fn apply_line_filter(text: &str, filter: &Filter) -> LineFilterResult {
         }
     }
 
-    // Collapse patterns — deduplicate matching lines
-    if !collapse_patterns.is_empty() {
+    // Collapse patterns — deduplicate matching lines (use pre-compiled)
+    if !filter.compiled_collapse.is_empty() {
         let mut seen = std::collections::HashSet::new();
         lines.retain(|line| {
-            if !collapse_patterns.iter().any(|p| p.is_match(line)) {
+            if !filter.compiled_collapse.iter().any(|p| p.is_match(line)) {
                 return true;
             }
             let key = line.trim().to_string();
@@ -154,14 +118,15 @@ pub fn apply_line_filter(text: &str, filter: &Filter) -> LineFilterResult {
             .collect();
     }
 
-    // Smart truncate with head/tail/priority
+    // Smart truncate with head/tail/priority (use pre-compiled)
+    let priority_refs: Vec<&Regex> = filter.compiled_priority.iter().collect();
     let truncated = smart_truncate(
         &lines.join("\n"),
         filter.max_lines,
         0, // no char limit at filter level
         filter.preserve_head,
         filter.preserve_tail,
-        &priority_patterns,
+        &priority_refs,
     );
 
     let output = if truncated.text.trim().is_empty() && !filter.on_empty.is_empty() {

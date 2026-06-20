@@ -6,7 +6,7 @@ use futures_util::StreamExt;
 use once_cell::sync::Lazy;
 use serde_json::Value;
 
-use crate::compression;
+use toksqz::compression;
 use crate::Config;
 
 static CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {

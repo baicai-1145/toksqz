@@ -12,7 +12,7 @@ pub fn smart_truncate(
     max_chars: usize,
     preserve_head: usize,
     preserve_tail: usize,
-    priority_patterns: &[Regex],
+    priority_patterns: &[&Regex],
 ) -> TruncateResult {
     let lines: Vec<&str> = text.split('\n').collect();
     let over_line_limit = max_lines > 0 && lines.len() > max_lines;
@@ -40,28 +40,28 @@ pub fn smart_truncate(
     };
 
     // Build selected lines: head + priority + tail
-    let mut selected: Vec<usize> = Vec::new();
+    // Use HashSet for O(1) lookup
+    let mut selected_set: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
     // Head lines
     for i in 0..preserve_head.min(lines.len()) {
-        selected.push(i);
+        selected_set.insert(i);
     }
 
-    // Priority lines (not already in head)
+    // Priority lines
     for &i in &priority_lines {
-        if !selected.contains(&i) {
-            selected.push(i);
-        }
+        selected_set.insert(i);
     }
 
-    // Tail lines (not already selected)
+    // Tail lines
     let tail_start = lines.len().saturating_sub(preserve_tail);
     for i in tail_start..lines.len() {
-        if i >= preserve_head && !selected.contains(&i) {
-            selected.push(i);
+        if i >= preserve_head {
+            selected_set.insert(i);
         }
     }
 
+    let mut selected: Vec<usize> = selected_set.into_iter().collect();
     selected.sort();
     let dropped_lines = lines.len().saturating_sub(selected.len());
 
@@ -93,14 +93,25 @@ pub fn smart_truncate(
         } else {
             let head_chars = (budget as f64 * 0.55).ceil() as usize;
             let tail_chars = budget.saturating_sub(head_chars);
-            let tail_text = if tail_chars > 0 && result.len() > tail_chars {
-                &result[result.len() - tail_chars..]
+            
+            // Collect char boundaries once for efficiency
+            let char_boundaries: Vec<usize> = result.char_indices().map(|(i, _)| i).collect();
+            let char_count = char_boundaries.len();
+            
+            let tail_text = if tail_chars > 0 && char_count > tail_chars {
+                let start = char_boundaries[char_count - tail_chars];
+                &result[start..]
             } else {
                 ""
             };
-            result = format!("{}{}{}", &result[..head_chars.min(result.len())], marker, tail_text);
-            if result.len() > max_chars {
-                result = result[..max_chars].to_string();
+            
+            let head_end = char_boundaries.get(head_chars.min(char_count)).copied().unwrap_or(result.len());
+            result = format!("{}{}{}", &result[..head_end], marker, tail_text);
+            
+            if result.chars().count() > max_chars {
+                let final_boundaries: Vec<usize> = result.char_indices().map(|(i, _)| i).collect();
+                let end = final_boundaries.get(max_chars).copied().unwrap_or(result.len());
+                result = result[..end].to_string();
             }
         }
     }
