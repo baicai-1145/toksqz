@@ -6,6 +6,7 @@ pub mod truncate;
 pub mod caveman;
 pub mod grouping;
 pub mod stats;
+pub mod cache;
 
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -14,6 +15,8 @@ pub fn init() {
     let count = filter::load_filters();
     println!("[toksqz] Loaded {} filters", count);
     caveman::load_rules();
+    // Initialize compression result cache
+    cache::init();
     // Pre-cache env vars and regex at init time
     Lazy::force(&GROUPING_ENABLED);
     Lazy::force(&GROUPING_LEVEL);
@@ -51,8 +54,37 @@ pub fn rtk_compress(text: &str) -> String {
     rtk_compress_full(text).text
 }
 
-/// Full RTK compression with detailed result.
+/// Full RTK compression with detailed result and caching.
 pub fn rtk_compress_full(text: &str) -> RtkCompressResult {
+    // Check cache first (only for non-empty input)
+    if !text.is_empty() && cache::is_enabled() {
+        let key = cache::hash_content(text);
+        if let Some(cached_text) = cache::get(key) {
+            // Cache hit - return cached result with minimal metadata
+            // Note: We don't cache filter_id/command_type to save memory
+            // The compression stats are still recorded
+            return RtkCompressResult {
+                text: cached_text,
+                filter_id: Some("cache".to_string()),
+                command_type: "cached".to_string(),
+                grouping_applied: false,
+            };
+        }
+    }
+
+    let result = rtk_compress_inner(text);
+    
+    // Cache the result for future use
+    if !text.is_empty() && cache::is_enabled() {
+        let key = cache::hash_content(text);
+        cache::insert(key, &result.text);
+    }
+    
+    result
+}
+
+/// Inner compression logic (no caching)
+fn rtk_compress_inner(text: &str) -> RtkCompressResult {
     use command_detector::detect_command_type;
     use filter::match_filter;
     use line_filter::apply_line_filter;
@@ -102,9 +134,31 @@ pub fn rtk_compress_full(text: &str) -> RtkCompressResult {
     }
 }
 
-/// Compress user text using Caveman engine
+/// Compress user text using Caveman engine with caching.
 pub fn caveman_compress(text: &str, level: &str) -> String {
-    caveman::compress(text, "user", level)
+    // Create a cache key that includes both text and level
+    let cache_key = if cache::is_enabled() {
+        Some(cache::hash_content(&format!("{}:{}", level, text)))
+    } else {
+        None
+    };
+    
+    // Check cache
+    if let Some(key) = cache_key {
+        if let Some(cached) = cache::get(key) {
+            return cached;
+        }
+    }
+    
+    // Compute
+    let result = caveman::compress(text, "user", level);
+    
+    // Cache result
+    if let Some(key) = cache_key {
+        cache::insert(key, &result);
+    }
+    
+    result
 }
 
 #[cfg(test)]
