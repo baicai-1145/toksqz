@@ -12,15 +12,10 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 
 pub fn init() {
-    let count = filter::load_filters();
-    println!("[toksqz] Loaded {} filters", count);
-    caveman::load_rules();
-    // Initialize compression result cache
-    cache::init();
-    // Pre-cache env vars and regex at init time
-    Lazy::force(&GROUPING_ENABLED);
-    Lazy::force(&GROUPING_LEVEL);
-    Lazy::force(&TRUNCATE_PRIORITY_RE);
+    // All components are Lazy — they initialize on first request.
+    // This keeps startup memory minimal (~2 MB base).
+    // First request triggers filter/regex/caveman/cache init automatically.
+    println!("[toksqz] 延迟初始化模式 — 首次请求时加载压缩引擎");
 }
 
 /// Cached env: SQUEEZE_GROUPING

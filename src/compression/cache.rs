@@ -1,4 +1,4 @@
-//! LRU cache for compression results.
+//! LRU cache for compression results with TTL expiration.
 //! 
 //! In Agent scenarios, the same tool outputs appear repeatedly across turns.
 //! This cache stores results directly (no compression overhead) to avoid
@@ -7,22 +7,43 @@
 //! # Memory Efficiency
 //! - Direct string storage: no zstd alloc/dealloc overhead
 //! - LRU eviction: bounded memory usage
+//! - TTL expiration: stale entries auto-cleaned (default 24h)
 //! - Cache hit: ~0.5μs (clone) vs ~8000μs (full compression)
 //! 
 //! # Configuration
-//! - `SQUEEZE_CACHE_SIZE`: Max cache entries (default: 2000)
-//! - Set to 0 to disable caching
+//! - `SQUEEZE_CACHE_SIZE`: Max cache entries (default: 10000)
+//! - `SQUEEZE_CACHE_TTL`: TTL in seconds (default: 86400 = 24h)
+//! - Set cache size to 0 to disable caching
 
 use lru::LruCache;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use std::num::NonZeroUsize;
+use std::time::{Duration, Instant};
 
 /// Default cache capacity (~17 MB max at 1.75 KB/entry)
 const DEFAULT_CACHE_SIZE: usize = 10000;
 
-/// Global cache instance — stores raw Strings (no zstd overhead)
-static CACHE: Lazy<Mutex<LruCache<u64, String>>> = Lazy::new(|| {
+/// Default TTL: 24 hours
+const DEFAULT_TTL: Duration = Duration::from_secs(86400);
+
+/// Global TTL value (cached at first access)
+static TTL: Lazy<Duration> = Lazy::new(|| {
+    std::env::var("SQUEEZE_CACHE_TTL")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_TTL)
+});
+
+/// Cache entry: compressed string + last access time
+struct CacheEntry {
+    value: String,
+    accessed: Instant,
+}
+
+/// Global cache instance — stores raw Strings with TTL tracking
+static CACHE: Lazy<Mutex<LruCache<u64, CacheEntry>>> = Lazy::new(|| {
     let capacity = cache_capacity();
     Mutex::new(LruCache::new(NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::new(1).unwrap())))
 });
@@ -58,13 +79,20 @@ pub fn hash_content(content: &str) -> u64 {
 }
 
 
+/// Get TTL from environment
+fn cache_ttl() -> Duration {
+    *TTL
+}
+
 /// Initialize the cache (call at startup)
 pub fn init() {
     let capacity = cache_capacity();
     if capacity > 0 {
         // Force initialization
         Lazy::force(&CACHE);
-        println!("[cache] Initialized with capacity: {} entries", capacity);
+        Lazy::force(&TTL);
+        let ttl_secs = cache_ttl().as_secs();
+        println!("[cache] Initialized with capacity: {} entries, TTL: {}s", capacity, ttl_secs);
     }
 }
 
@@ -74,7 +102,7 @@ pub fn is_enabled() -> bool {
 }
 
 /// Get a compressed result from cache.
-/// Returns the cached string if found.
+/// Returns the cached string if found and not expired.
 #[inline]
 pub fn get(key: u64) -> Option<String> {
     if !is_enabled() {
@@ -82,21 +110,39 @@ pub fn get(key: u64) -> Option<String> {
     }
     
     let mut cache = CACHE.lock();
-    let result = cache.get(&key).cloned();
+    let ttl = cache_ttl();
+    let now = Instant::now();
     
-    // Update stats
-    let mut stats = STATS.lock();
-    if result.is_some() {
-        stats.hits += 1;
+    // LruCache::get_mut returns &mut V — update accessed time in place
+    let found = if let Some(entry) = cache.get_mut(&key) {
+        if now.duration_since(entry.accessed) < ttl {
+            entry.accessed = now;  // refresh timestamp via &mut
+            Some(entry.value.clone())
+        } else {
+            None  // expired
+        }
     } else {
-        stats.misses += 1;
+        None  // not found
+    };
+    
+    // If expired, remove (mutable borrow from get() is released here)
+    if found.is_none() && cache.contains(&key) {
+        cache.pop(&key);
     }
     
-    result
+    let mut stats = STATS.lock();
+    if let Some(value) = found {
+        stats.hits += 1;
+        Some(value)
+    } else {
+        stats.misses += 1;
+        None
+    }
 }
 
 /// Insert a compression result into cache.
-/// Stores the string directly (no zstd overhead for small texts).
+/// Stores the string directly with access timestamp.
+/// Periodically cleans up expired entries.
 #[inline]
 pub fn insert(key: u64, value: &str) {
     if !is_enabled() {
@@ -104,6 +150,7 @@ pub fn insert(key: u64, value: &str) {
     }
     
     let mut cache = CACHE.lock();
+    let now = Instant::now();
     
     // Track evictions
     if cache.len() >= cache.cap().get() {
@@ -111,7 +158,17 @@ pub fn insert(key: u64, value: &str) {
         stats.evictions += 1;
     }
     
-    cache.put(key, value.to_string());
+    // Clean up expired entries before inserting
+    let ttl = cache_ttl();
+    let expired_keys: Vec<u64> = cache.iter()
+        .filter(|(_, e)| now.duration_since(e.accessed) >= ttl)
+        .map(|(k, _)| *k)
+        .collect();
+    for k in expired_keys {
+        cache.pop(&k);
+    }
+    
+    cache.put(key, CacheEntry { value: value.to_string(), accessed: now });
 }
 
 /// Get or compute: try cache first, fallback to compute function.
@@ -167,14 +224,14 @@ pub fn is_empty() -> bool {
 }
 
 /// Estimate current cache memory usage in bytes.
-/// Includes key + string heap allocation for each entry.
+/// Includes key + string heap + Instant + node overhead for each entry.
 pub fn memory_bytes() -> usize {
     let cache = CACHE.lock();
     // LruCache overhead: ~72 bytes per node (prev/next pointers + key + value)
-    // Plus the actual String heap data
+    // Plus the actual String heap data + Instant (32 bytes)
     let mut total = 0usize;
-    for (_, v) in cache.iter() {
-        total += 8 + v.capacity() + 72; // key(8) + string heap + node overhead
+    for (_, e) in cache.iter() {
+        total += 8 + e.value.capacity() + 32 + 72; // key(8) + string heap + Instant + node
     }
     total
 }
