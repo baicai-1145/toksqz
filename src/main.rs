@@ -51,6 +51,8 @@ async fn main() {
     let app = Router::new()
         .route("/health", get(proxy::health))
         .route("/stats", get(proxy::stats))
+        .route("/api/stats/time", get(proxy::stats_time))
+        .route("/dashboard", get(proxy::dashboard))
         .route("/", get(proxy::health))
         .fallback(any(proxy::handle))
         .with_state(config.clone());

@@ -2,180 +2,22 @@ use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
-use futures_util::{StreamExt, future::poll_fn};
-use http_body_util::{BodyExt, Full};
-use hyper::body::Incoming;
-use hyper_util::rt::TokioIo;
+use futures_util::StreamExt;
 use once_cell::sync::Lazy;
 use serde_json::Value;
-use std::sync::Mutex;
-use tokio::net::TcpStream;
-use tokio_rustls::client::TlsStream;
 
 use toksqz::compression;
 use crate::Config;
 
-// ─── Minimal upstream HTTP client (hyper direct, no reqwest) ─────────────
+// ─── Upstream HTTP client (reqwest with rustls) ─────────────────────────
 
-/// A TCP or TLS stream that implements AsyncRead + AsyncWrite.
-enum UpstreamStream {
-    Plain(TcpStream),
-    Tls(Box<Pin<Box<TlsStream<TcpStream>>>>),
-}
-
-impl AsyncRead for UpstreamStream {
-    fn poll_read(
-        self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        match self.get_mut() {
-            UpstreamStream::Plain(s) => Pin::new(s).poll_read(cx, buf),
-            UpstreamStream::Tls(s) => Pin::new(s.as_mut()).poll_read(cx, buf),
-        }
-    }
-}
-
-impl AsyncWrite for UpstreamStream {
-    fn poll_write(
-        self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8],
-    ) -> Poll<std::io::Result<usize>> {
-        match self.get_mut() {
-            UpstreamStream::Plain(s) => Pin::new(s).poll_write(cx, buf),
-            UpstreamStream::Tls(s) => Pin::new(s.as_mut()).poll_write(cx, buf),
-        }
-    }
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        match self.get_mut() {
-            UpstreamStream::Plain(s) => Pin::new(s).poll_flush(cx),
-            UpstreamStream::Tls(s) => Pin::new(s.as_mut()).poll_flush(cx),
-        }
-    }
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        match self.get_mut() {
-            UpstreamStream::Plain(s) => Pin::new(s).poll_shutdown(cx),
-            UpstreamStream::Tls(s) => Pin::new(s.as_mut()).poll_shutdown(cx),
-        }
-    }
-}
-
-static UPSTREAM_CLIENT: Lazy<UpstreamClient> = Lazy::new(UpstreamClient::new);
-
-struct UpstreamClient {
-    sender: Mutex<Option<hyper::client::conn::http1::SendRequest<http_body_util::Full<hyper::body::Bytes>>>>,
-}
-
-impl UpstreamClient {
-    fn new() -> Self {
-        UpstreamClient { sender: Mutex::new(None) }
-    }
-
-    async fn get_or_connect(&self, upstream: &str) -> Result<
-        hyper::client::conn::http1::SendRequest<Full<hyper::body::Bytes>>,
-        Box<dyn std::error::Error + Send + Sync>,
-    > {
-        // Check if cached sender is still ready (no await while holding lock)
-        let cached = self.sender.lock().unwrap().take();
-        if let Some(mut sender) = cached {
-            if poll_fn(|cx| sender.poll_ready(cx)).await.is_ok() {
-                return Ok(sender);
-            }
-            // Not ready — drop it, will reconnect
-        }
-
-        // Need (re)connect — build new sender outside the lock
-        let parsed: hyper::Uri = upstream.parse()?;
-        let host = parsed.host().unwrap_or("localhost");
-        let is_https = parsed.scheme_str() == Some("https");
-        let default_port = if is_https { 443 } else { 80 };
-        let port = parsed.port_u16().unwrap_or(default_port);
-
-        let tcp = TcpStream::connect((host, port)).await?;
-        let io: TokioIo<UpstreamStream>;
-
-        if is_https {
-            let config = rustls::ClientConfig::builder()
-                .dangerous()
-                .with_custom_certificate_verifier(std::sync::Arc::new(NoCertVerify))
-                .with_no_client_auth();
-            let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
-            let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-            let tls = connector.connect(server_name, tcp).await?;
-            io = TokioIo::new(UpstreamStream::Tls(Box::new(Box::pin(tls))));
-        } else {
-            io = TokioIo::new(UpstreamStream::Plain(tcp));
-        }
-
-        let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
-        tokio::spawn(async move { let _ = conn.await; });
-
-        sender.ready().await?;
-
-        let mut guard = self.sender.lock().unwrap();
-        *guard = Some(sender);
-        Ok(guard.take().unwrap())
-    }
-
-    async fn send(
-        &self, upstream: &str, req: hyper::Request<Full<hyper::body::Bytes>>,
-    ) -> Result<hyper::Response<Incoming>, Box<dyn std::error::Error + Send + Sync>> {
-        let mut sender = match self.get_or_connect(upstream).await {
-            Ok(s) => s,
-            Err(e) => return Err(e),
-        };
-        match sender.send_request(req).await {
-            Ok(resp) => {
-                // Put sender back for reuse
-                *self.sender.lock().unwrap() = Some(sender);
-                Ok(resp)
-            }
-            Err(e) => {
-                // Connection broken — sender consumed, next call reconnects
-                Err(Box::new(e))
-            }
-        }
-    }
-}
-
-/// rustls verifier that accepts any server certificate.
-#[derive(Debug)]
-struct NoCertVerify;
-impl rustls::client::danger::ServerCertVerifier for NoCertVerify {
-    fn verify_server_cert(
-        &self, _end_entity: &rustls::pki_types::CertificateDer<'_>,
-        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
-        _server_name: &rustls::pki_types::ServerName<'_>,
-        _ocsp_response: &[u8], _now: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
-    }
-    fn verify_tls12_signature(&self, _message: &[u8], _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-    fn verify_tls13_signature(&self, _message: &[u8], _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        vec![
-            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-            rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
-            rustls::SignatureScheme::RSA_PSS_SHA256,
-            rustls::SignatureScheme::RSA_PSS_SHA384,
-            rustls::SignatureScheme::RSA_PSS_SHA512,
-            rustls::SignatureScheme::RSA_PKCS1_SHA256,
-            rustls::SignatureScheme::RSA_PKCS1_SHA384,
-            rustls::SignatureScheme::RSA_PKCS1_SHA512,
-            rustls::SignatureScheme::ED25519,
-        ]
-    }
-}
-
-use std::pin::Pin;
-use std::task::{Context, Poll};
-use tokio::io::{AsyncRead, AsyncWrite};
+static UPSTREAM_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
+    reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .no_proxy()
+        .build()
+        .expect("Failed to build reqwest client")
+});
 
 struct CompressResult {
     original_tokens: usize,
@@ -237,6 +79,41 @@ pub async fn stats(State(config): State<Config>) -> impl IntoResponse {
     )
 }
 
+pub async fn stats_time(State(config): State<Config>) -> impl IntoResponse {
+    if !config.stats_enabled {
+        return (StatusCode::NOT_FOUND, [("content-type", "application/json")],
+            "{\"error\":\"stats disabled\"}".to_string());
+    }
+    let summary = compression::stats::get_summary();
+    let time_series = compression::stats::get_time_series();
+    let cache = compression::cache::get_stats();
+    (
+        StatusCode::OK,
+        [("content-type", "application/json")],
+        serde_json::json!({
+            "summary": {
+                "total_requests": summary.total_requests,
+                "total_original_tokens": summary.total_original_tokens,
+                "total_compressed_tokens": summary.total_compressed_tokens,
+                "total_saved_tokens": summary.total_saved_tokens,
+                "avg_savings_pct": summary.avg_savings_pct,
+                "cache_hits": cache.hits,
+                "cache_misses": cache.misses,
+                "command_hits": summary.command_hits,
+            },
+            "time_series": time_series,
+        }).to_string(),
+    )
+}
+
+pub async fn dashboard() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [("content-type", "text/html; charset=utf-8")],
+        include_str!("../dashboard.html"),
+    )
+}
+
 pub async fn handle(
     State(config): State<Config>,
     headers: HeaderMap,
@@ -257,20 +134,25 @@ pub async fn handle(
         }
     };
 
-    let mut payload: Value = match serde_json::from_slice(&bytes) {
-        Ok(v) => v,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                [("content-type", "application/json")],
-                "{\"error\":\"Invalid JSON\"}".to_string(),
-            )
-                .into_response();
+    // For requests without body (GET /v1/models, DELETE, etc.), forward directly
+    let mut payload: Option<Value> = if bytes.is_empty() {
+        None
+    } else {
+        match serde_json::from_slice(&bytes) {
+            Ok(v) => Some(v),
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    [("content-type", "application/json")],
+                    "{\"error\":\"Invalid JSON\"}".to_string(),
+                )
+                    .into_response();
+            }
         }
     };
 
-    // Compress messages
-    let result = compress_messages(&mut payload, &config);
+    // Compress messages (only for requests with JSON body)
+    let result = payload.as_mut().map(|p| compress_messages(p, &config)).flatten();
 
     if config.log_enabled {
         if let Some(ref r) = result {
@@ -293,43 +175,42 @@ pub async fn handle(
     let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or(uri.path());
     let url = format!("{}{}", config.upstream, path_and_query);
 
-    // Forward headers
-    let mut req_headers = hyper::HeaderMap::new();
-    req_headers.insert(
-        hyper::header::CONTENT_TYPE,
-        hyper::header::HeaderValue::from_static("application/json"),
-    );
-    if let Some(auth) = headers.get("authorization") {
-        if let Ok(val) = hyper::header::HeaderValue::from_bytes(auth.as_bytes()) {
-            req_headers.insert(hyper::header::AUTHORIZATION, val);
+    // Forward headers — pass through all original headers except hop-by-hop
+    let mut req_headers = HeaderMap::new();
+    for (key, value) in headers.iter() {
+        if is_hop_by_hop(key.as_str()) {
+            continue;
         }
-    }
-    if let Some(rid) = headers.get("x-request-id") {
-        if let Ok(val) = hyper::header::HeaderValue::from_bytes(rid.as_bytes()) {
-            req_headers.insert("x-request-id", val);
-        }
+        req_headers.insert(key.clone(), value.clone());
     }
 
-    let body_bytes = serde_json::to_vec(&payload).unwrap_or_default();
-
-    // Build hyper request
-    let hyper_method = hyper::Method::from_bytes(method.as_str().as_bytes())
-        .unwrap_or(hyper::Method::POST);
-    let hyper_uri: hyper::Uri = match url.parse() {
-        Ok(u) => u,
-        Err(e) => {
-            return (StatusCode::BAD_GATEWAY, [("content-type", "application/json")],
-                format!("{{\"error\":\"Invalid upstream URL: {}\"}}", e)).into_response();
+    let body_bytes = if result.is_some() {
+        // Body was compressed — re-serialize
+        match &payload {
+            Some(p) => serde_json::to_vec(p).unwrap_or_default(),
+            None => bytes.to_vec(),
         }
+    } else {
+        // No compression — forward original bytes unchanged
+        bytes.to_vec()
     };
-    let mut req = hyper::Request::builder()
-        .method(hyper_method)
-        .uri(hyper_uri)
-        .body(http_body_util::Full::new(hyper::body::Bytes::from(body_bytes)))
-        .unwrap();
-    *req.headers_mut() = req_headers;
 
-    let upstream_resp = match UPSTREAM_CLIENT.send(&config.upstream, req).await {
+    if config.log_enabled {
+        eprintln!("[debug] Forwarding {} bytes to {}", body_bytes.len(), url);
+    }
+
+    // Build reqwest request
+    let mut req_builder = UPSTREAM_CLIENT.request(
+        reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap_or(reqwest::Method::POST),
+        &url,
+    );
+    req_builder = req_builder.headers(req_headers);
+    if payload.is_some() {
+        req_builder = req_builder.header("content-type", "application/json");
+    }
+    let reqwest_req = req_builder.body(body_bytes).build().unwrap();
+
+    let upstream_resp = match UPSTREAM_CLIENT.execute(reqwest_req).await {
         Ok(r) => r,
         Err(e) => {
             return (
@@ -379,7 +260,7 @@ pub async fn handle(
     let status = StatusCode::from_u16(upstream_resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
 
     // Stream response body (supports SSE)
-    let stream = upstream_resp.into_body().into_data_stream().map(|result: Result<hyper::body::Bytes, hyper::Error>| {
+    let stream = upstream_resp.bytes_stream().map(|result: Result<bytes::Bytes, reqwest::Error>| {
         result.map_err(|e| {
             eprintln!("  Stream error: {}", e);
             std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
@@ -390,9 +271,10 @@ pub async fn handle(
 }
 
 fn is_hop_by_hop(name: &str) -> bool {
+    let lower = name.to_lowercase();
     matches!(
-        name.to_lowercase().as_str(),
-        "transfer-encoding" | "connection" | "keep-alive"
+        lower.as_str(),
+        "transfer-encoding" | "connection" | "keep-alive" | "host" | "content-length" | "content-encoding"
     )
 }
 

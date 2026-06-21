@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Squeeze Proxy — Token Savings</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+:root{--bg:#050709;--surface:#0c1018;--card:#111722;--card-hover:#151d2b;--border:#1a2235;
+--text:#e2e8f0;--text2:#8892a6;--text3:#4a5568;--accent:#10b981;--accent-dim:rgba(16,185,129,.1);
+--blue:#6366f1;--blue-dim:rgba(99,102,241,.1);--amber:#f59e0b;--amber-dim:rgba(245,158,11,.1);
+--rose:#f43f5e;--rose-dim:rgba(244,63,94,.1);--radius:16px}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',system-ui,sans-serif;
+background:var(--bg);color:var(--text);min-height:100vh;line-height:1.6;
+background-image:radial-gradient(ellipse at 20% 0%,rgba(16,185,129,.04) 0%,transparent 60%),
+radial-gradient(ellipse at 80% 100%,rgba(99,102,241,.03) 0%,transparent 60%)}
+.container{max-width:1200px;margin:0 auto;padding:2rem}
+header{display:flex;align-items:center;justify-content:space-between;margin-bottom:2.5rem}
+.logo{display:flex;align-items:center;gap:.75rem}
+.logo-icon{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--accent),#059669);
+display:flex;align-items:center;justify-content:center;font-size:18px;color:#fff;font-weight:700}
+h1{font-size:1.25rem;font-weight:600;letter-spacing:-.02em}
+h1 span{color:var(--text2);font-weight:400}
+.badge{font-size:.7rem;padding:.25rem .6rem;border-radius:20px;background:var(--accent-dim);
+color:var(--accent);font-weight:500;display:flex;align-items:center;gap:.35rem}
+.badge::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--accent);
+animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin-bottom:2rem}
+.stat-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
+padding:1.5rem;transition:all .3s ease;position:relative;overflow:hidden}
+.stat-card:hover{border-color:rgba(255,255,255,.08);transform:translateY(-2px);
+box-shadow:0 8px 32px rgba(0,0,0,.3)}
+.stat-card .label{font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.08em;
+font-weight:500;margin-bottom:.5rem}
+.stat-card .value{font-size:2rem;font-weight:700;letter-spacing:-.04em;
+font-variant-numeric:tabular-nums}
+.stat-card .sub{font-size:.75rem;color:var(--text3);margin-top:.35rem}
+.stat-card.accent .value{color:var(--accent)}
+.stat-card.blue .value{color:var(--blue)}
+.stat-card.amber .value{color:var(--amber)}
+.stat-card.rose .value{color:var(--rose)}
+.stat-card .glow{position:absolute;top:-50%;right:-50%;width:100%;height:100%;border-radius:50%;
+filter:blur(60px);opacity:.06;pointer-events:none}
+.stat-card.accent .glow{background:var(--accent)}
+.stat-card.blue .glow{background:var(--blue)}
+.stat-card.amber .glow{background:var(--amber)}
+.stat-card.rose .glow{background:var(--rose)}
+.charts-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem}
+.chart-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:1.5rem}
+.chart-card.full{grid-column:1/-1}
+.chart-card h3{font-size:.85rem;font-weight:500;color:var(--text2);margin-bottom:1rem;
+display:flex;align-items:center;gap:.5rem}
+.chart-card h3 i{width:8px;height:8px;border-radius:50%;display:inline-block}
+.chart-card canvas{max-height:220px}
+.table-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
+padding:1.5rem;margin-top:1rem}
+.table-card h3{font-size:.85rem;font-weight:500;color:var(--text2);margin-bottom:1rem}
+table{width:100%;border-collapse:collapse;font-size:.8rem}
+th{text-align:left;color:var(--text3);font-weight:500;padding:.6rem .8rem;
+border-bottom:1px solid var(--border);text-transform:uppercase;letter-spacing:.06em;font-size:.7rem}
+td{padding:.6rem .8rem;border-bottom:1px solid rgba(26,34,53,.5);color:var(--text)}
+tr:last-child td{border:none}
+.bar-cell{display:flex;align-items:center;gap:.5rem}
+.bar{height:6px;border-radius:3px;background:var(--accent);min-width:2px;transition:width .6s ease}
+.empty{text-align:center;padding:3rem;color:var(--text3);font-size:.85rem}
+@media(max-width:768px){.stats-grid{grid-template-columns:1fr 1fr}.charts-grid{grid-template-columns:1fr}
+.stat-card .value{font-size:1.5rem}}
+@media(max-width:480px){.stats-grid{grid-template-columns:1fr}.container{padding:1rem}}
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <div class="logo">
+      <div class="logo-icon">S</div>
+      <h1>Squeeze <span>Proxy</span></h1>
+    </div>
+    <div class="badge" id="status">LIVE</div>
+  </header>
+
+  <div class="stats-grid">
+    <div class="stat-card accent">
+      <div class="glow"></div>
+      <div class="label">节省 Tokens</div>
+      <div class="value" id="v-saved">—</div>
+      <div class="sub" id="v-saved-sub"></div>
+    </div>
+    <div class="stat-card blue">
+      <div class="glow"></div>
+      <div class="label">总请求数</div>
+      <div class="value" id="v-reqs">—</div>
+      <div class="sub" id="v-reqs-sub"></div>
+    </div>
+    <div class="stat-card amber">
+      <div class="glow"></div>
+      <div class="label">平均节省率</div>
+      <div class="value" id="v-pct">—</div>
+      <div class="sub" id="v-pct-sub"></div>
+    </div>
+    <div class="stat-card rose">
+      <div class="glow"></div>
+      <div class="label">缓存命中率</div>
+      <div class="value" id="v-cache">—</div>
+      <div class="sub" id="v-cache-sub"></div>
+    </div>
+  </div>
+
+  <div class="charts-grid">
+    <div class="chart-card full">
+      <h3><i style="background:var(--accent)"></i> 每小时 Token 节省量</h3>
+      <canvas id="chartHourly"></canvas>
+    </div>
+    <div class="chart-card">
+      <h3><i style="background:var(--blue)"></i> 每日趋势</h3>
+      <canvas id="chartDaily"></canvas>
+    </div>
+    <div class="chart-card">
+      <h3><i style="background:var(--amber)"></i> 每月概览</h3>
+      <canvas id="chartMonthly"></canvas>
+    </div>
+  </div>
+
+  <div class="table-card">
+    <h3>按命令类型统计压缩效果</h3>
+    <div id="table-body"></div>
+  </div>
+</div>
+
+<script>
+Chart.defaults.color = '#8892a6';
+Chart.defaults.borderColor = '#1a2235';
+Chart.defaults.font.family = "-apple-system, BlinkMacSystemFont, 'Inter', sans-serif";
+Chart.defaults.font.size = 11;
+
+const COLORS = {
+  accent: '#10b981', accentBg: 'rgba(16,185,129,.15)',
+  blue: '#6366f1', blueBg: 'rgba(99,102,241,.15)',
+  amber: '#f59e0b', amberBg: 'rgba(245,158,11,.15)',
+  rose: '#f43f5e', roseBg: 'rgba(244,63,94,.15)',
+};
+
+function fmt(n) {
+  if (n >= 1e6) return (n/1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n/1e3).toFixed(1) + 'K';
+  return String(n);
+}
+
+const chartOpts = (yLabel) => ({
+  responsive: true, maintainAspectRatio: true, aspectRatio: 2.8,
+  animation: { duration: 600, easing: 'easeOutQuart' },
+  plugins: { legend: { display: true, position: 'top', labels: { boxWidth: 12, padding: 16 } },
+    tooltip: { backgroundColor: '#1a2235', titleColor: '#e2e8f0', bodyColor: '#8892a6',
+      borderColor: '#2a3550', borderWidth: 1, padding: 10, cornerRadius: 8,
+      callbacks: { label: ctx => ` ${ctx.dataset.label}: ${fmt(ctx.parsed.y)} 个` } } },
+  scales: { x: { grid: { display: false } },
+    y: { grid: { color: 'rgba(26,34,53,.6)' }, ticks: { callback: v => fmt(v) },
+      title: { display: !!yLabel, text: yLabel || '' } } }
+});
+
+function makeBarChart(canvas, color, colorBg) {
+  return new Chart(document.getElementById(canvas), {
+    type: 'bar',
+    data: { labels: [], datasets: [
+      { label: '已节省', data: [], backgroundColor: color, borderRadius: 4, barPercentage: .6 },
+      { label: '压缩后', data: [], backgroundColor: colorBg, borderRadius: 4, barPercentage: .6 },
+    ] },
+    options: { ...chartOpts('Tokens'), scales: { ...chartOpts('Tokens').scales,
+      x: { ...chartOpts('Tokens').scales.x, stacked: false },
+      y: { ...chartOpts('Tokens').scales.y, stacked: false } } }
+  });
+}
+
+function makeLineChart(canvas, color, colorBg) {
+  const ctx = document.getElementById(canvas).getContext('2d');
+  const grad = ctx.createLinearGradient(0, 0, 0, 200);
+  grad.addColorStop(0, colorBg); grad.addColorStop(1, 'transparent');
+  return new Chart(canvas, {
+    type: 'line',
+    data: { labels: [], datasets: [
+      { label: '已节省', data: [], borderColor: color, backgroundColor: grad, fill: true,
+        tension: .4, pointRadius: 3, pointBackgroundColor: color, borderWidth: 2 },
+      { label: '原始量', data: [], borderColor: '#4a5568', backgroundColor: 'transparent',
+        borderDash: [4,4], tension: .4, pointRadius: 2, borderWidth: 1.5 },
+    ] },
+    options: chartOpts('Tokens')
+  });
+}
+
+let cHourly, cDaily, cMonthly;
+
+function init() {
+  cHourly = makeBarChart('chartHourly', COLORS.accent, COLORS.accentBg);
+  cDaily = makeLineChart('chartDaily', COLORS.blue, COLORS.blueBg);
+  cMonthly = makeBarChart('chartMonthly', COLORS.amber, COLORS.amberBg);
+}
+
+function updateChart(chart, labels, saved, compressed) {
+  chart.data.labels = labels;
+  chart.data.datasets[0].data = saved;
+  if (chart.data.datasets.length > 1) chart.data.datasets[1].data = compressed;
+  chart.update('none');
+}
+
+async function refresh() {
+  try {
+    const res = await fetch('/api/stats/time');
+    const data = await res.json();
+    const s = data.summary;
+    const ts = data.time_series;
+
+    document.getElementById('v-saved').textContent = fmt(s.total_saved_tokens);
+    document.getElementById('v-saved-sub').textContent = `${fmt(s.total_original_tokens)} → ${fmt(s.total_compressed_tokens)}`;
+    document.getElementById('v-reqs').textContent = fmt(s.total_requests);
+    document.getElementById('v-reqs-sub').textContent = `条消息已处理`;
+    document.getElementById('v-pct').textContent = s.avg_savings_pct.toFixed(1) + '%';
+    document.getElementById('v-pct-sub').textContent = `平均压缩率`;
+    const total = s.cache_hits + s.cache_misses;
+    const rate = total > 0 ? ((s.cache_hits / total) * 100).toFixed(1) : '0.0';
+    document.getElementById('v-cache').textContent = rate + '%';
+    document.getElementById('v-cache-sub').textContent = `${fmt(s.cache_hits)} 命中 / ${fmt(s.cache_misses)} 未命中`;
+
+    // Hourly (last 48 entries)
+    const h = ts.hourly.slice(-48);
+    updateChart(cHourly,
+      h.map(p => p.label.slice(11) + ':00'),
+      h.map(p => p.saved_tokens),
+      h.map(p => p.compressed_tokens));
+
+    // Daily (last 30)
+    const d = ts.daily.slice(-30);
+    updateChart(cDaily,
+      d.map(p => p.label.slice(5)),
+      d.map(p => p.saved_tokens),
+      d.map(p => p.original_tokens));
+
+    // Monthly
+    const m = ts.monthly;
+    updateChart(cMonthly,
+      m.map(p => p.label),
+      m.map(p => p.saved_tokens),
+      m.map(p => p.compressed_tokens));
+
+    // Table
+    const cmds = s.command_hits || [];
+    const maxSaved = Math.max(1, ...cmds.map(c => c.saved_tokens));
+    if (cmds.length > 0) {
+      let html = '<table><thead><tr><th>命令类型</th><th>命中数</th><th>节省 Tokens</th><th>分布</th></tr></thead><tbody>';
+      cmds.forEach(c => {
+        const w = Math.max(2, (c.saved_tokens / maxSaved) * 100);
+        html += `<tr><td>${c.command_type}</td><td>${fmt(c.hits)}</td><td>${fmt(c.saved_tokens)}</td>
+          <td><div class="bar-cell"><div class="bar" style="width:${w}%"></div></div></td></tr>`;
+      });
+      html += '</tbody></table>';
+      document.getElementById('table-body').innerHTML = html;
+    } else {
+      document.getElementById('table-body').innerHTML = '<div class="empty">暂无数据 — 发送请求后将在此显示统计</div>';
+    }
+  } catch(e) {
+    console.error('Refresh failed:', e);
+  }
+}
+
+init();
+refresh();
+setInterval(refresh, 10000);
+</script>
+</body>
+</html>
