@@ -142,6 +142,8 @@ jobs:
           images: |
             ghcr.io/${{ github.repository }}
             docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.BIN_NAME }}
+          flavor: |
+            latest=false
           tags: |
             type=ref,event=tag
             type=raw,value=latest
