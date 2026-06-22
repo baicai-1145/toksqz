@@ -38,11 +38,23 @@ SQUEEZE_UPSTREAM=https://api.openai.com ./target/release/toksqz
 
 打开 `http://localhost:8787/dashboard` 查看实时压缩仪表盘。
 
+### Docker
+
+```bash
+docker build -t toksqz .
+docker run --rm -p 8787:8787 \
+  -e SQUEEZE_UPSTREAM=https://api.openai.com \
+  toksqz
+```
+
+容器镜像默认设置了 `SQUEEZE_HOST=0.0.0.0`，这样宿主机可以直接访问代理服务。
+
 ### 环境变量
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
 | `SQUEEZE_UPSTREAM` | `https://your-newapi.example.com` | 上游 API 基础 URL |
+| `SQUEEZE_HOST` | `127.0.0.1` | 监听地址（容器中用 `0.0.0.0`） |
 | `SQUEEZE_PORT` | `8787` | 本地监听端口 |
 | `SQUEEZE_RTK` | `true` | 启用 RTK 压缩（工具输出） |
 | `SQUEEZE_CAVEMAN` | `true` | 启用 Caveman 压缩（用户消息）（`true`/`false`/强度级别） |

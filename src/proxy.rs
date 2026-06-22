@@ -707,6 +707,7 @@ mod tests {
     fn test_config() -> Config {
         Config {
             upstream: "http://localhost:9999".into(),
+            host: std::net::IpAddr::from([127, 0, 0, 1]),
             port: 8787,
             rtk_enabled: true,
             caveman_level: Some("lite".into()),

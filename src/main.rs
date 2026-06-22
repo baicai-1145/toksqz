@@ -1,12 +1,13 @@
 mod proxy;
 use toksqz::compression;
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use axum::{Router, routing::{get, any}};
 
 #[derive(Clone)]
 pub struct Config {
     pub upstream: String,
+    pub host: IpAddr,
     pub port: u16,
     pub rtk_enabled: bool,
     pub caveman_level: Option<String>,
@@ -21,6 +22,10 @@ impl Config {
             .unwrap_or_else(|_| "https://your-newapi.example.com".into())
             .trim_end_matches('/')
             .to_string();
+        let host = std::env::var("SQUEEZE_HOST")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(IpAddr::from([127, 0, 0, 1]));
         let port = std::env::var("SQUEEZE_PORT")
             .ok().and_then(|v| v.parse().ok()).unwrap_or(8787);
         let rtk_enabled = std::env::var("SQUEEZE_RTK").unwrap_or_else(|_| "true".into()) != "false";
@@ -37,7 +42,7 @@ impl Config {
         let log_enabled = std::env::var("SQUEEZE_LOG").unwrap_or_else(|_| "true".into()) != "false";
         let grouping_enabled = std::env::var("SQUEEZE_GROUPING").unwrap_or_else(|_| "true".into()) != "false";
         let stats_enabled = std::env::var("SQUEEZE_STATS").unwrap_or_else(|_| "true".into()) != "false";
-        Config { upstream, port, rtk_enabled, caveman_level, log_enabled, grouping_enabled, stats_enabled }
+        Config { upstream, host, port, rtk_enabled, caveman_level, log_enabled, grouping_enabled, stats_enabled }
     }
 }
 
@@ -57,18 +62,19 @@ async fn main() {
         .fallback(any(proxy::handle))
         .with_state(config.clone());
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], config.port));
+    let addr = SocketAddr::from((config.host, config.port));
     let caveman_str = config.caveman_level.as_deref().unwrap_or("off");
     println!(
         "\n┌─────────────────────────────────────────────┐\n\
            │  squeeze-proxy-rs 已启动                    │\n\
-           │  本地地址:  http://localhost:{}{}\n\
+           │  监听地址:  http://{}:{}{}\n\
            │  上游 API:  {}{}\n\
            │  RTK:       {}{}\n\
            │  Caveman:   {}{}\n\
            └─────────────────────────────────────────────┘",
+        config.host,
         config.port,
-        " ".repeat(26_usize.saturating_sub(config.port.to_string().len())),
+        " ".repeat(24_usize.saturating_sub(format!("{}:{}", config.host, config.port).len())),
         config.upstream,
         " ".repeat(26_usize.saturating_sub(config.upstream.len())),
         config.rtk_enabled,

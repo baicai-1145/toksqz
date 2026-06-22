@@ -1,0 +1,16 @@
+target/
+.git/
+.github/
+.gitignore
+.qoderignore
+tests/
+examples/
+deepgram-proxy/
+README.md
+README_CN.md
+LICENSE
+NOTICE
+Cargo.lock.bak
+*.swp
+*.swo
+.DS_Store

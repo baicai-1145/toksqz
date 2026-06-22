@@ -38,11 +38,23 @@ Then point your AI client to `http://localhost:8787` instead of the upstream API
 
 Open `http://localhost:8787/dashboard` to view the real-time compression dashboard.
 
+### Docker
+
+```bash
+docker build -t toksqz .
+docker run --rm -p 8787:8787 \
+  -e SQUEEZE_UPSTREAM=https://api.openai.com \
+  toksqz
+```
+
+The container image sets `SQUEEZE_HOST=0.0.0.0` so the proxy is reachable from the host machine.
+
 ### Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
 | `SQUEEZE_UPSTREAM` | `https://your-newapi.example.com` | Upstream API base URL |
+| `SQUEEZE_HOST` | `127.0.0.1` | Listen host (`0.0.0.0` for containers) |
 | `SQUEEZE_PORT` | `8787` | Local listen port |
 | `SQUEEZE_RTK` | `true` | Enable RTK compression for tool output |
 | `SQUEEZE_CAVEMAN` | `true` | Enable Caveman compression for user messages (`true`/`false`/intensity level) |
