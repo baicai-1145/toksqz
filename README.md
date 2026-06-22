@@ -49,6 +49,34 @@ docker run --rm -p 8787:8787 \
 
 The container image sets `SQUEEZE_HOST=0.0.0.0` so the proxy is reachable from the host machine.
 
+### npm
+
+```bash
+npm install -g toksqz
+toksqz --version
+```
+
+The npm package is a thin wrapper that downloads the matching prebuilt binary from GitHub Releases during `postinstall`.
+
+For publishing, configure npm trusted publishing for:
+
+- GitHub user or org: `baicai-1145`
+- Repository: `toksqz`
+- Workflow filename: `release.yml`
+- Allowed action: `npm publish`
+
+After OIDC is configured, `NPM_TOKEN` is no longer needed in GitHub Actions.
+
+### Homebrew
+
+Generate the formula from a published GitHub Release, then commit it into your tap repository:
+
+```bash
+python packaging/homebrew/generate_formula.py 0.1.2 -o toksqz.rb
+```
+
+The generated formula expects a tap such as `baicai-1145/homebrew-tap`.
+
 ### Environment Variables
 
 | Variable | Default | Description |

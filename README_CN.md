@@ -49,6 +49,34 @@ docker run --rm -p 8787:8787 \
 
 容器镜像默认设置了 `SQUEEZE_HOST=0.0.0.0`，这样宿主机可以直接访问代理服务。
 
+### npm
+
+```bash
+npm install -g toksqz
+toksqz --version
+```
+
+npm 包本身只是一个很薄的包装层，会在 `postinstall` 阶段从 GitHub Releases 下载匹配平台的预编译二进制。
+
+发布时请在 npm 后台配置 trusted publishing：
+
+- GitHub 用户或组织：`baicai-1145`
+- Repository：`toksqz`
+- Workflow filename：`release.yml`
+- Allowed action：`npm publish`
+
+切到 OIDC 之后，GitHub Actions 里就不再需要 `NPM_TOKEN` 了。
+
+### Homebrew
+
+先基于已经发布的 GitHub Release 生成 formula，再提交到你的 tap 仓库：
+
+```bash
+python packaging/homebrew/generate_formula.py 0.1.2 -o toksqz.rb
+```
+
+生成出来的 formula 适合放进类似 `baicai-1145/homebrew-tap` 这样的 tap 仓库。
+
 ### 环境变量
 
 | 变量 | 默认值 | 说明 |

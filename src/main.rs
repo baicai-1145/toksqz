@@ -4,6 +4,9 @@ use toksqz::compression;
 use std::net::{IpAddr, SocketAddr};
 use axum::{Router, routing::{get, any}};
 
+const BIN_NAME: &str = env!("CARGO_PKG_NAME");
+const BIN_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[derive(Clone)]
 pub struct Config {
     pub upstream: String,
@@ -46,8 +49,45 @@ impl Config {
     }
 }
 
+fn handle_cli_args() -> bool {
+    let mut args = std::env::args().skip(1);
+    match args.next().as_deref() {
+        Some("--version") | Some("-V") => {
+            println!("{BIN_NAME} {BIN_VERSION}");
+            true
+        }
+        Some("--help") | Some("-h") => {
+            println!(
+                "{BIN_NAME} {BIN_VERSION}\n\n\
+                 Environment variables:\n\
+                   SQUEEZE_UPSTREAM        Upstream API base URL\n\
+                   SQUEEZE_HOST            Listen host (default: 127.0.0.1)\n\
+                   SQUEEZE_PORT            Listen port (default: 8787)\n\
+                   SQUEEZE_RTK             Enable RTK compression\n\
+                   SQUEEZE_CAVEMAN         Enable Caveman compression\n\
+                   SQUEEZE_CAVEMAN_LEVEL   Caveman intensity level\n\
+                   SQUEEZE_LOG             Print compression stats\n\
+                   SQUEEZE_GROUPING        Enable output grouping\n\
+                   SQUEEZE_STATS           Enable stats collection\n\
+                   SQUEEZE_CACHE_TTL       Cache TTL in seconds\n"
+            );
+            true
+        }
+        Some(other) => {
+            eprintln!("unknown argument: {other}");
+            eprintln!("run `{BIN_NAME} --help` for usage");
+            std::process::exit(2);
+        }
+        None => false,
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
+    if handle_cli_args() {
+        return;
+    }
+
     let config = Config::from_env();
 
     // Initialize compression engines (load filters + caveman rules)

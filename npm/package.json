@@ -1,0 +1,34 @@
+{
+  "name": "toksqz",
+  "version": "0.1.2",
+  "description": "npm wrapper for the toksqz Rust binary",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/baicai-1145/toksqz.git"
+  },
+  "homepage": "https://github.com/baicai-1145/toksqz",
+  "bugs": {
+    "url": "https://github.com/baicai-1145/toksqz/issues"
+  },
+  "bin": {
+    "toksqz": "bin/toksqz.js"
+  },
+  "scripts": {
+    "postinstall": "node ./scripts/postinstall.js"
+  },
+  "files": [
+    "bin/",
+    "scripts/",
+    "README.md"
+  ],
+  "keywords": [
+    "llm",
+    "proxy",
+    "cli",
+    "rust"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}
