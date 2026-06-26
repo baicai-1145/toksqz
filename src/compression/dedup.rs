@@ -19,7 +19,6 @@ pub fn deduplicate_lines(text: &str, threshold: usize) -> DedupResult {
 
         if !line.trim().is_empty() && run_length >= threshold {
             output.push(line.to_string());
-            output.push(format!("[line repeated {}x]", run_length - 1));
             output.push(format!("[rtk:dropped {} repeated lines]", run_length - 1));
             collapsed += run_length - 1;
             index += run_length;

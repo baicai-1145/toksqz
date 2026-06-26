@@ -9,7 +9,7 @@ pub struct LineFilterResult {
     pub stripped_lines: usize,
 }
 
-fn strip_ansi(text: &str) -> String {
+pub(crate) fn strip_ansi(text: &str) -> String {
     static ANSI_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r"\u{001b}\[[0-?]*[ -/]*[@-~]").unwrap()
     });
@@ -38,7 +38,11 @@ fn truncate_unicode_safe(line: &str, max_chars: usize) -> String {
     format!("{}...", truncated)
 }
 
-pub fn apply_line_filter(text: &str, filter: &Filter) -> LineFilterResult {
+pub fn apply_line_filter(
+    text: &str,
+    filter: &Filter,
+    intent_keywords: &[String],
+) -> LineFilterResult {
     // Use pre-compiled regexes from the Filter struct — no HashMap/RwLock overhead
     let mut lines: Vec<String> = text.split("\r\n").flat_map(|l| l.split('\n'))
         .map(|s| s.to_string())
@@ -120,6 +124,7 @@ pub fn apply_line_filter(text: &str, filter: &Filter) -> LineFilterResult {
 
     // Smart truncate with head/tail/priority (use pre-compiled)
     let priority_refs: Vec<&Regex> = filter.compiled_priority.iter().collect();
+    let intent_refs: Vec<&str> = intent_keywords.iter().map(|s| s.as_str()).collect();
     let truncated = smart_truncate(
         &lines.join("\n"),
         filter.max_lines,
@@ -127,6 +132,7 @@ pub fn apply_line_filter(text: &str, filter: &Filter) -> LineFilterResult {
         filter.preserve_head,
         filter.preserve_tail,
         &priority_refs,
+        &intent_refs,
     );
 
     let output = if truncated.text.trim().is_empty() && !filter.on_empty.is_empty() {

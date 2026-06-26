@@ -36,9 +36,17 @@ static TTL: Lazy<Duration> = Lazy::new(|| {
         .unwrap_or(DEFAULT_TTL)
 });
 
-/// Cache entry: compressed string + last access time
+#[derive(Clone)]
+pub struct CachedCompressionResult {
+    pub text: String,
+    pub filter_id: Option<String>,
+    pub command_type: String,
+    pub grouping_applied: bool,
+}
+
+/// Cache entry: compressed result + last access time
 struct CacheEntry {
-    value: String,
+    value: CachedCompressionResult,
     accessed: Instant,
 }
 
@@ -102,9 +110,9 @@ pub fn is_enabled() -> bool {
 }
 
 /// Get a compressed result from cache.
-/// Returns the cached string if found and not expired.
+/// Returns the cached value if found and not expired.
 #[inline]
-pub fn get(key: u64) -> Option<String> {
+pub fn get(key: u64) -> Option<CachedCompressionResult> {
     if !is_enabled() {
         return None;
     }
@@ -141,10 +149,10 @@ pub fn get(key: u64) -> Option<String> {
 }
 
 /// Insert a compression result into cache.
-/// Stores the string directly with access timestamp.
+/// Stores the full result with access timestamp.
 /// Periodically cleans up expired entries.
 #[inline]
-pub fn insert(key: u64, value: &str) {
+pub fn insert(key: u64, value: CachedCompressionResult) {
     if !is_enabled() {
         return;
     }
@@ -168,7 +176,7 @@ pub fn insert(key: u64, value: &str) {
         cache.pop(&k);
     }
     
-    cache.put(key, CacheEntry { value: value.to_string(), accessed: now });
+    cache.put(key, CacheEntry { value, accessed: now });
 }
 
 /// Get or compute: try cache first, fallback to compute function.
@@ -181,9 +189,9 @@ pub fn insert(key: u64, value: &str) {
 /// });
 /// ```
 #[inline]
-pub fn get_or_compute<F>(key: u64, compute: F) -> String
+pub fn get_or_compute<F>(key: u64, compute: F) -> CachedCompressionResult
 where
-    F: FnOnce() -> String,
+    F: FnOnce() -> CachedCompressionResult,
 {
     // Try cache first
     if let Some(cached) = get(key) {
@@ -192,7 +200,7 @@ where
     
     // Compute and cache
     let result = compute();
-    insert(key, &result);
+    insert(key, result.clone());
     result
 }
 
@@ -231,7 +239,12 @@ pub fn memory_bytes() -> usize {
     // Plus the actual String heap data + Instant (32 bytes)
     let mut total = 0usize;
     for (_, e) in cache.iter() {
-        total += 8 + e.value.capacity() + 32 + 72; // key(8) + string heap + Instant + node
+        total += 8
+            + e.value.text.capacity()
+            + e.value.command_type.capacity()
+            + e.value.filter_id.as_ref().map(|s| s.capacity()).unwrap_or(0)
+            + 32
+            + 72;
     }
     total
 }
@@ -258,9 +271,14 @@ mod tests {
     fn test_cache_roundtrip() {
         let original = "Hello, World! This is a test string for caching roundtrip unique123";
         let key = hash_content(original);
-        insert(key, original);
+        insert(key, CachedCompressionResult {
+            text: original.to_string(),
+            filter_id: None,
+            command_type: "unknown".to_string(),
+            grouping_applied: false,
+        });
         let cached = get(key).unwrap();
-        assert_eq!(original, cached);
+        assert_eq!(original, cached.text);
     }
 
     #[test]
@@ -273,11 +291,16 @@ mod tests {
         let stats_before = get_stats();
         
         // Insert
-        insert(key, value);
+        insert(key, CachedCompressionResult {
+            text: value.to_string(),
+            filter_id: None,
+            command_type: "unknown".to_string(),
+            grouping_applied: false,
+        });
         
         // Should be retrievable
         let cached = get(key).unwrap();
-        assert_eq!(cached, value);
+        assert_eq!(cached.text, value);
         
         // Stats should have incremented
         let stats_after = get_stats();
@@ -288,7 +311,12 @@ mod tests {
     fn test_cache_lru_eviction() {
         // Insert many items with unique prefix to avoid collision
         for i in 0..100 {
-            insert(1_000_000 + i, &format!("lru_eviction_value{}", i));
+            insert(1_000_000 + i, CachedCompressionResult {
+                text: format!("lru_eviction_value{}", i),
+                filter_id: None,
+                command_type: "unknown".to_string(),
+                grouping_applied: false,
+            });
         }
         
         // Cache should have entries
@@ -299,7 +327,7 @@ mod tests {
         // Recent entries should be accessible
         let recent = get(1_000_000 + 99);
         assert!(recent.is_some(), "Recent entry should be in cache");
-        assert_eq!(recent.unwrap(), "lru_eviction_value99");
+        assert_eq!(recent.unwrap().text, "lru_eviction_value99");
     }
 
     #[test]
@@ -308,14 +336,24 @@ mod tests {
         let mut compute_count = 0;
         
         // First call: insert the value
-        insert(key, "computed value");
+        insert(key, CachedCompressionResult {
+            text: "computed value".to_string(),
+            filter_id: None,
+            command_type: "unknown".to_string(),
+            grouping_applied: false,
+        });
         
         // get_or_compute should find it in cache
         let result = get_or_compute(key, || {
             compute_count += 1;
-            "should not be called".to_string()
+            CachedCompressionResult {
+                text: "should not be called".to_string(),
+                filter_id: None,
+                command_type: "unknown".to_string(),
+                grouping_applied: false,
+            }
         });
-        assert_eq!(result, "computed value");
+        assert_eq!(result.text, "computed value");
         assert_eq!(compute_count, 0); // Cache hit, compute not called
     }
 
@@ -334,11 +372,16 @@ Changes not staged for commit:
 no changes added to commit (use "git add" and/or "git commit -a")"#;
 
         let key = hash_content(typical_output);
-        insert(key, typical_output);
+        insert(key, CachedCompressionResult {
+            text: typical_output.to_string(),
+            filter_id: None,
+            command_type: "unknown".to_string(),
+            grouping_applied: false,
+        });
         
         // Verify retrieval
         let cached = get(key).unwrap();
-        assert_eq!(cached, typical_output);
+        assert_eq!(cached.text, typical_output);
         
         // Verify cache has entries and memory > 0
         assert!(len() >= 1);

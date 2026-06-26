@@ -475,11 +475,19 @@ fn match_filter_dyn(text: &str, command: Option<&str>) -> Option<usize> {
         }
     }
 
-    // 3. Match by match patterns (regex on full text)
-    if let Some(idx) = filters.iter().enumerate().position(|(i, _f)| {
-        match_patterns[i].iter().any(|re| re.is_match(text))
-    }) {
-        return Some(idx);
+    // 3. Match by match patterns (regex on full text).
+    // Only when the command type was reliably determined. If detection fell back
+    // to "unknown" (no reliable command hint and content too weak to classify),
+    // we must NOT let a filter's broad content pattern pick an aggressive filter
+    // — that is the same content-hijack we guard against in command detection.
+    // Unknown output goes to the high-fidelity generic fallback instead.
+    // Principle: when unsure, do not compress wrongly.
+    if detection.command_type != "unknown" {
+        if let Some(idx) = filters.iter().enumerate().position(|(i, _f)| {
+            match_patterns[i].iter().any(|re| re.is_match(text))
+        }) {
+            return Some(idx);
+        }
     }
 
     // 4. Fallback to generic-output

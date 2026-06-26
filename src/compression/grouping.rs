@@ -284,7 +284,7 @@ pub fn apply_grouping(text: &str, command_type: &str, _level: &str) -> GroupingR
 
     let grouped = match command_type {
         // File list grouping
-        "git-status" | "shell-find" | "shell-ls" => group_file_list(&lines),
+        "git-status" | "shell-ls" => group_file_list(&lines),
 
         // Test output grouping
         "test-vitest" | "test-jest" | "test-pytest" | "test-cargo" | "test-go" | "playwright" => {
@@ -297,12 +297,17 @@ pub fn apply_grouping(text: &str, command_type: &str, _level: &str) -> GroupingR
             group_build_output(&lines)
         }
 
-        // Generic grouping for unknown types with file-like output
-        _ => {
-            // Try file list grouping as fallback
-            group_file_list(&lines)
-                .or_else(|| group_build_output(&lines))
-        }
+        // Signal-dense reads/searches need concrete lines/paths, not directory summaries.
+        // Compile/inspect output is already handled by their filters; re-grouping by
+        // severity would collapse the error-context blocks we want to keep.
+        "file-read" | "structured-read" | "file-list" | "shell-grep" | "shell-find"
+        | "json-output" | "python-script" | "binary-read" | "macos-inspect"
+        | "cargo-build" | "swift-build" | "go-build" | "clang-build" => None,
+
+        // Generic grouping for unknown types with file-like output only.
+        // Do not fall back to group_build_output: unknown output that happens to
+        // mention "error"/"failed" is often source code or symbol dumps, not build logs.
+        _ => group_file_list(&lines),
     };
 
     match grouped {
@@ -407,7 +412,7 @@ Build failed with 2 errors";
     }
 
     #[test]
-    fn test_group_find_multidir() {
+    fn test_shell_find_preserves_paths_without_grouping() {
         let input = "\
 ./src/app.ts
 ./src/utils/helper.ts
@@ -417,7 +422,25 @@ Build failed with 2 errors";
 ./lib/plugins/b.ts
 ./tests/test.ts
 ./tests/integration/test.ts";
+        // shell-find is signal-dense: coding agents need concrete paths, not summaries.
         let result = apply_grouping(input, "shell-find", "lite");
+        assert!(!result.applied);
+        assert!(!result.text.contains("[rtk:grouped"));
+        assert!(result.text.contains("./lib/plugins/a.ts"));
+    }
+
+    #[test]
+    fn test_group_shell_ls_multidir_still_groups() {
+        let input = "\
+./src/app.ts
+./src/utils/helper.ts
+./src/utils/format.ts
+./lib/core.ts
+./lib/plugins/a.ts
+./lib/plugins/b.ts
+./tests/test.ts
+./tests/integration/test.ts";
+        let result = apply_grouping(input, "shell-ls", "lite");
         assert!(result.applied);
         assert!(result.text.contains("[rtk:grouped"));
     }

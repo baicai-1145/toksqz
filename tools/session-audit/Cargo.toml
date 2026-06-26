@@ -1,0 +1,24 @@
+# Standalone audit tooling. Kept OUT of the main `toksqz` package so it never
+# compiles during the main project's build/publish. Depends on toksqz via path
+# and uses only its public API. Declares its own [workspace] so cargo never
+# tries to fold it into the parent package.
+[package]
+name = "session-audit"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+toksqz = { path = "../.." }
+regex = "1"
+serde_json = "1"
+
+[[bin]]
+name = "session_full_audit"
+path = "src/session_full_audit.rs"
+
+[[bin]]
+name = "session_cmd_audit"
+path = "src/session_cmd_audit.rs"
+
+[workspace]
