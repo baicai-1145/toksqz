@@ -98,7 +98,7 @@ pub(crate) fn compress(payload: &mut Value, config: &crate::Config) -> Option<Co
         }
     }
 
-    acc.finish()
+    Some(acc)
 }
 
 #[cfg(test)]
@@ -136,7 +136,7 @@ mod tests {
             ]
         });
         // Hint suppressed and output too small to change — forward original bytes.
-        let result = compress_messages(&mut payload, &test_config());
-        assert!(result.is_none());
+        let result = compress_messages(&mut payload, &test_config()).expect("gemini format");
+        assert!(result.finish().is_none());
     }
 }

@@ -115,7 +115,7 @@ pub(crate) fn compress(payload: &mut Value, config: &crate::Config) -> Option<Co
         }
     }
 
-    acc.finish()
+    Some(acc)
 }
 fn compress_content(
     content: &mut Value,

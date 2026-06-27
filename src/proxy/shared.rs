@@ -18,6 +18,10 @@ pub(crate) struct CompressResult {
     /// must forward the original request bytes unchanged — re-serializing JSON
     /// can break Codex deferred tools (`spawn_agent`, `tool_search`, …).
     pub modified: bool,
+    /// Codex Responses API only: `(before, after)` pairs for `function_call_output`
+    /// fields. Applied via byte-level patch so `tools` / deferred-tool metadata
+    /// in the original JSON are never re-serialized.
+    pub output_patches: Vec<(String, String)>,
 }
 
 impl CompressResult {
@@ -28,11 +32,18 @@ impl CompressResult {
             filters_applied: Vec::new(),
             per_command: Vec::new(),
             modified: false,
+            output_patches: Vec::new(),
         }
     }
 
     pub(crate) fn finish(self) -> Option<Self> {
-        if self.modified { Some(self) } else { None }
+        // Ignore cosmetic RTK edits that save zero tokens (e.g. 379→378 chars).
+        // Those still set `modified` but must not trigger a full JSON re-serialize.
+        if self.modified && self.compressed_tokens < self.original_tokens {
+            Some(self)
+        } else {
+            None
+        }
     }
 }
 

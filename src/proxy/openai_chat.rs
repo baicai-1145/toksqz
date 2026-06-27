@@ -84,7 +84,7 @@ pub(crate) fn compress(payload: &mut Value, config: &crate::Config) -> Option<Co
         }
     }
 
-    acc.finish()
+    Some(acc)
 }
 
 #[cfg(test)]
@@ -113,7 +113,7 @@ mod tests {
                 {"role": "tool", "tool_call_id": "missing", "content": "some unrecognized text output\n"}
             ]
         });
-        let result = compress_messages(&mut payload, &test_config());
-        assert!(result.is_none());
+        let result = compress_messages(&mut payload, &test_config()).expect("openai format");
+        assert!(result.finish().is_none());
     }
 }

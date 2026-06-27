@@ -20,7 +20,7 @@ use serde_json::Value;
 use toksqz::compression;
 
 use super::shared::{
-    account_passthrough, compress_tool_output, CompressResult,
+    account_passthrough, compress_tool_output, estimate_tokens, CompressResult,
 };
 
 static SESSION_COMMANDS: Lazy<RwLock<HashMap<i64, String>>> =
@@ -306,6 +306,11 @@ pub(crate) fn compress(payload: &mut Value, config: &crate::Config) -> Option<Co
                                 config,
                                 &mut acc,
                             );
+                            if compressed != text
+                                && estimate_tokens(&compressed) < estimate_tokens(&text)
+                            {
+                                acc.output_patches.push((text, compressed.clone()));
+                            }
                             *output = Value::String(compressed);
                         }
                     }
@@ -349,7 +354,42 @@ pub(crate) fn compress(payload: &mut Value, config: &crate::Config) -> Option<Co
         _ => {}
     }
 
-    acc.finish()
+    Some(acc)
+}
+
+/// Patch only `function_call_output.output` string values in the original JSON
+/// bytes. Preserves top-level key order and the `tools` array exactly — Codex
+/// deferred tools (`spawn_agent`, `tool_search`) break when the full body is
+/// re-serialized via `serde_json::to_vec`.
+pub(crate) fn apply_output_patches(
+    original: &[u8],
+    patches: &[(String, String)],
+) -> Option<Vec<u8>> {
+    if patches.is_empty() {
+        return Some(original.to_vec());
+    }
+    let mut body = std::str::from_utf8(original).ok()?.to_string();
+    for (before, after) in patches {
+        if before == after {
+            continue;
+        }
+        let before_json = serde_json::to_string(before).ok()?;
+        let after_json = serde_json::to_string(after).ok()?;
+        let mut replaced = false;
+        for sep in ["", " "] {
+            let needle = format!(r#""output":{sep}{before_json}"#);
+            if let Some(idx) = body.find(&needle) {
+                let patched = format!(r#""output":{sep}{after_json}"#);
+                body.replace_range(idx..idx + needle.len(), &patched);
+                replaced = true;
+                break;
+            }
+        }
+        if !replaced {
+            return None;
+        }
+    }
+    Some(body.into_bytes())
 }
 
 #[cfg(test)]
@@ -357,6 +397,20 @@ mod tests {
     use super::*;
     use crate::proxy::compress_messages;
     use crate::proxy::tests_util::test_config;
+
+    #[test]
+    fn test_apply_output_patches_preserves_tools_key_order() {
+        let original = br#"{"model":"gpt-5.5","tools":[{"type":"namespace","name":"multi_agent_v1"}],"input":[{"type":"function_call_output","call_id":"c1","output":"OLD_OUTPUT_TEXT"}]}"#;
+        let patched = apply_output_patches(
+            original,
+            &[("OLD_OUTPUT_TEXT".into(), "NEW_OUTPUT".into())],
+        )
+        .unwrap();
+        let patched_str = std::str::from_utf8(&patched).unwrap();
+        assert!(patched_str.contains(r#""output":"NEW_OUTPUT""#));
+        assert!(patched_str.find("\"tools\"").unwrap() < patched_str.find("\"input\"").unwrap());
+        assert!(!patched_str.contains("OLD_OUTPUT_TEXT"));
+    }
 
     #[test]
     fn test_responses_user_only_request_returns_none() {
@@ -368,9 +422,9 @@ mod tests {
                 ]}
             ]
         });
-        let result = compress_messages(&mut payload, &test_config());
+        let acc = compress_messages(&mut payload, &test_config()).expect("responses format");
         assert!(
-            result.is_none(),
+            acc.finish().is_none(),
             "Codex user-only turns must forward original JSON bytes (deferred tools)"
         );
     }

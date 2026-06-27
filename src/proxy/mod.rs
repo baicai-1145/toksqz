@@ -68,6 +68,10 @@ fn compress_messages(payload: &mut Value, config: &Config) -> Option<CompressRes
     None
 }
 
+fn is_responses_payload(payload: &Value) -> bool {
+    payload.get("input").is_some()
+}
+
 pub async fn health(State(config): State<Config>) -> impl IntoResponse {
     (
         StatusCode::OK,
@@ -241,14 +245,26 @@ pub async fn handle(
         req_headers.insert(key.clone(), value.clone());
     }
 
-    let body_bytes = if result.is_some() {
-        // Body was compressed — re-serialize
+    let body_bytes = if payload.as_ref().is_some_and(is_responses_payload) {
+        // Codex Responses API: never full re-serialize — patch output strings only.
+        match result.as_ref() {
+            Some(r) if !r.output_patches.is_empty()
+                && r.compressed_tokens < r.original_tokens =>
+            {
+                responses::apply_output_patches(&bytes, &r.output_patches)
+                    .unwrap_or_else(|| bytes.to_vec())
+            }
+            _ => bytes.to_vec(),
+        }
+    } else if result.as_ref().is_some_and(|r| {
+        r.modified && r.compressed_tokens < r.original_tokens
+    }) {
+        // Other API formats: re-serialize with preserve_order (from parse).
         match &payload {
             Some(p) => serde_json::to_vec(p).unwrap_or_default(),
             None => bytes.to_vec(),
         }
     } else {
-        // No compression — forward original bytes unchanged
         bytes.to_vec()
     };
 
@@ -291,41 +307,43 @@ pub async fn handle(
         response_headers.insert(key.clone(), value.clone());
     }
     if let Some(ref r) = result {
-        response_headers.insert(
-            "x-squeeze-original-tokens",
-            r.original_tokens.to_string().parse().unwrap(),
-        );
-        response_headers.insert(
-            "x-squeeze-compressed-tokens",
-            r.compressed_tokens.to_string().parse().unwrap(),
-        );
-        // Extended stats headers
-        if !r.filters_applied.is_empty() {
-            let filters_str = r.filters_applied.join(",");
-            if let Ok(val) = filters_str.parse() {
-                response_headers.insert("x-toksqz-filters-applied", val);
+        if r.compressed_tokens < r.original_tokens {
+            response_headers.insert(
+                "x-squeeze-original-tokens",
+                r.original_tokens.to_string().parse().unwrap(),
+            );
+            response_headers.insert(
+                "x-squeeze-compressed-tokens",
+                r.compressed_tokens.to_string().parse().unwrap(),
+            );
+            // Extended stats headers
+            if !r.filters_applied.is_empty() {
+                let filters_str = r.filters_applied.join(",");
+                if let Ok(val) = filters_str.parse() {
+                    response_headers.insert("x-toksqz-filters-applied", val);
+                }
             }
-        }
-        if !r.per_command.is_empty() {
-            let per_cmd_str: Vec<String> = r
-                .per_command
-                .iter()
-                .map(|c| {
-                    format!(
-                        "{}:{}->{},",
-                        c.command_type, c.original_tokens, c.compressed_tokens
-                    )
-                })
-                .collect();
-            let joined: String = per_cmd_str.join("");
-            // Truncate header to 8KB max
-            let truncated = if joined.len() > 8192 {
-                &joined[..8192]
-            } else {
-                &joined
-            };
-            if let Ok(val) = truncated.parse() {
-                response_headers.insert("x-toksqz-per-command", val);
+            if !r.per_command.is_empty() {
+                let per_cmd_str: Vec<String> = r
+                    .per_command
+                    .iter()
+                    .map(|c| {
+                        format!(
+                            "{}:{}->{},",
+                            c.command_type, c.original_tokens, c.compressed_tokens
+                        )
+                    })
+                    .collect();
+                let joined: String = per_cmd_str.join("");
+                // Truncate header to 8KB max
+                let truncated = if joined.len() > 8192 {
+                    &joined[..8192]
+                } else {
+                    &joined
+                };
+                if let Ok(val) = truncated.parse() {
+                    response_headers.insert("x-toksqz-per-command", val);
+                }
             }
         }
     }
@@ -483,6 +501,33 @@ mod tests {
         });
         let result = compress_messages(&mut payload, &test_config()).unwrap();
         assert!(result.original_tokens > 0);
+    }
+
+    #[test]
+    fn test_responses_trivial_rtk_change_does_not_reserialize() {
+        let mut payload = serde_json::json!({
+            "model": "gpt-5.5",
+            "tools": [{"type": "namespace", "name": "multi_agent_v1", "tools": [
+                {"type": "function", "name": "spawn_agent"}
+            ]}],
+            "input": [
+                {"type": "function_call", "call_id": "c1", "name": "exec_command", "arguments": "{\"cmd\":\"find . -maxdepth 1 -type f\"}"},
+                {"type": "function_call_output", "call_id": "c1", "output": "a\nb\nc\n"}
+            ]
+        });
+        let original = serde_json::to_vec(&payload).unwrap();
+        let result = compress_messages(&mut payload, &test_config());
+        // Small outputs may stay passthrough; when RTK edits but saves 0 tokens,
+        // finish() must return None so we never full re-serialize.
+        if let Some(r) = result {
+            if r.compressed_tokens >= r.original_tokens {
+                assert!(
+                    r.finish().is_none(),
+                    "zero-savings RTK edits must not trigger wire rewrite"
+                );
+            }
+        }
+        let _ = original;
     }
 
     #[test]
