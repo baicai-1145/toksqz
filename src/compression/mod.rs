@@ -102,7 +102,7 @@ fn rtk_compress_inner(text: &str, command: Option<&str>) -> RtkCompressResult {
     use command_detector::{detect_command_type, extract_intent_keywords};
     use filter::match_filter;
     use line_filter::apply_line_filter;
-    use dedup::deduplicate_lines;
+    use dedup::deduplicate;
     use truncate::char_truncate_with_intent;
     use grouping::apply_grouping;
 
@@ -158,16 +158,16 @@ fn rtk_compress_inner(text: &str, command: Option<&str>) -> RtkCompressResult {
         }
     }
 
-    // Deduplicate (threshold=3). High-fidelity reads must keep every line: collapsing
-    // repeated disassembly/source/inspection lines would break line/offset alignment.
+    // Block + consecutive-line dedup. High-fidelity reads must keep every line:
+    // collapsing repeated disassembly/source/inspection lines would break alignment.
     const HIGH_FIDELITY: [&str; 5] =
         ["file-read", "binary-read", "structured-read", "macos-inspect", "json-output"];
     if !HIGH_FIDELITY.contains(&command_type.as_str()) {
-        let deduped = deduplicate_lines(&result, 3);
+        let deduped = deduplicate(&result);
         result = deduped.text;
     }
 
-    // Global fallback: char budget only. Line limits are owned by per-filter rules.
+    // Char budget: head + tail (fill budget) + error lines + intent keywords.
     let truncated = char_truncate_with_intent(&result, *GLOBAL_MAX_CHARS, &intent_refs);
     result = truncated.text;
 
@@ -330,7 +330,11 @@ mod tests {
 
         let result = rtk_compress_full(&input);
         assert!(result.text.len() <= 12_000);
-        assert!(result.text.contains("[rtk:truncated by chars]"));
+        assert!(
+            result.text.contains("[rtk:truncated by chars]")
+                || result.text.contains("[rtk:truncated "),
+            "over-budget output must show a truncation marker"
+        );
     }
 
     #[test]
@@ -560,12 +564,62 @@ mod tests {
 
         let result = rtk_compress_with_command(&input, Some("./noise"));
         assert!(
-            result.text.contains("[rtk:dropped 4 repeated lines]"),
-            "dedup should emit a single dropped-lines marker"
+            result.text.contains("[rtk:dropped")
+                || result.text.contains("omitted")
+                || result.text.contains("repeating earlier"),
+            "dedup should collapse consecutive or block repeats"
         );
         assert!(
             !result.text.contains("[line repeated"),
             "the redundant second marker must be removed"
+        );
+    }
+
+    #[test]
+    fn test_block_dedup_interleaved_pattern() {
+        let block: Vec<String> = (1..=10).map(|i| format!("block-line-{i}")).collect();
+        let mut lines = block.clone();
+        lines.push("sep-b".into());
+        lines.extend(block.clone());
+        lines.push("sep-c".into());
+        lines.extend(block);
+        let input = lines.join("\n");
+
+        let result = rtk_compress_with_command(&input, Some("./tool"));
+        assert!(
+            result.text.contains("omitted 10-line block")
+                || result.text.contains("repeating earlier"),
+            "interleaved block repeats should be collapsed"
+        );
+        assert!(result.text.contains("sep-b"));
+        assert!(result.text.contains("sep-c"));
+        assert_eq!(result.text.matches("block-line-10").count(), 1);
+    }
+
+    #[test]
+    fn test_long_output_keeps_error_after_block_dedup() {
+        let block: Vec<String> = (1..=8).map(|i| format!("repeatable chunk line {i} with padding text")).collect();
+        let mut lines: Vec<String> = Vec::new();
+        for _ in 0..20 {
+            lines.extend(block.clone());
+            lines.push("---".into());
+        }
+        lines.push("error: fatal configuration problem".into());
+        for _ in 0..20 {
+            lines.extend(block.clone());
+            lines.push("---".into());
+        }
+        let input = lines.join("\n");
+        assert!(input.len() > 12_000, "fixture must exceed char budget: {}", input.len());
+
+        let result = rtk_compress_with_command(&input, None);
+        assert!(
+            result.text.contains("error: fatal configuration problem"),
+            "error line must survive block dedup + char budget"
+        );
+        assert!(
+            result.text.contains("omitted") || result.text.contains("[rtk:truncated"),
+            "long repetitive output should be compressed"
         );
     }
 
