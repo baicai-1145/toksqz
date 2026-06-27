@@ -72,7 +72,7 @@ pub(crate) fn compress(payload: &mut Value, config: &crate::Config) -> Option<Co
             let compressed = compress_tool_output(&content, hint.as_deref(), config, &mut acc);
             msg["content"] = Value::String(compressed);
         } else if role == "user" {
-            let (compressed, orig, new) = compress_user_text_return(&content, config);
+            let (compressed, orig, new) = compress_user_text_return(&content, config, &mut acc);
             acc.original_tokens += orig;
             acc.compressed_tokens += new;
             if config.log_enabled && compressed.len() < content.len() {
@@ -84,7 +84,7 @@ pub(crate) fn compress(payload: &mut Value, config: &crate::Config) -> Option<Co
         }
     }
 
-    Some(acc)
+    acc.finish()
 }
 
 #[cfg(test)]
@@ -114,6 +114,6 @@ mod tests {
             ]
         });
         let result = compress_messages(&mut payload, &test_config());
-        assert!(result.is_some());
+        assert!(result.is_none());
     }
 }

@@ -20,7 +20,7 @@ use serde_json::Value;
 use toksqz::compression;
 
 use super::shared::{
-    account_passthrough, compress_tool_output, compress_user_text_return, CompressResult,
+    account_passthrough, compress_tool_output, CompressResult,
 };
 
 static SESSION_COMMANDS: Lazy<RwLock<HashMap<i64, String>>> =
@@ -221,13 +221,10 @@ pub(crate) fn compress(payload: &mut Value, config: &crate::Config) -> Option<Co
     let mut session_commands: HashMap<i64, String> = HashMap::new();
 
     match input {
-        // String input — treat as single user message
+        // String input — treat as single user message. Do not Caveman-compress:
+        // Codex Responses API relies on exact prompt bytes for deferred tools.
         Value::String(s) if !s.is_empty() => {
-            let text = s.clone();
-            let (compressed, orig, new) = compress_user_text_return(&text, config);
-            acc.original_tokens += orig;
-            acc.compressed_tokens += new;
-            *s = compressed;
+            account_passthrough(s, &mut acc);
         }
         Value::Array(items) => {
             for item in items.iter_mut() {
@@ -322,15 +319,12 @@ pub(crate) fn compress(payload: &mut Value, config: &crate::Config) -> Option<Co
                     if let Some(content) = item.get_mut("content") {
                         match content {
                             Value::String(s) if !s.is_empty() => {
-                                let text = s.clone();
                                 if role == "user" {
-                                    let (compressed, orig, new) =
-                                        compress_user_text_return(&text, config);
-                                    acc.original_tokens += orig;
-                                    acc.compressed_tokens += new;
-                                    *s = compressed;
+                                    // Never Caveman-compress Codex user messages (includes
+                                    // injected AGENTS.md). RTK only applies to tool output.
+                                    account_passthrough(s, &mut acc);
                                 } else {
-                                    account_passthrough(&text, &mut acc);
+                                    account_passthrough(s, &mut acc);
                                 }
                             }
                             Value::Array(parts) => {
@@ -340,11 +334,7 @@ pub(crate) fn compress(payload: &mut Value, config: &crate::Config) -> Option<Co
                                         _ => continue,
                                     };
                                     if role == "user" {
-                                        let (compressed, orig, new) =
-                                            compress_user_text_return(&text, config);
-                                        acc.original_tokens += orig;
-                                        acc.compressed_tokens += new;
-                                        part["text"] = Value::String(compressed);
+                                        account_passthrough(&text, &mut acc);
                                     } else {
                                         account_passthrough(&text, &mut acc);
                                     }
@@ -359,7 +349,7 @@ pub(crate) fn compress(payload: &mut Value, config: &crate::Config) -> Option<Co
         _ => {}
     }
 
-    Some(acc)
+    acc.finish()
 }
 
 #[cfg(test)]
@@ -367,6 +357,23 @@ mod tests {
     use super::*;
     use crate::proxy::compress_messages;
     use crate::proxy::tests_util::test_config;
+
+    #[test]
+    fn test_responses_user_only_request_returns_none() {
+        let mut payload = serde_json::json!({
+            "model": "gpt-5.5",
+            "input": [
+                {"type": "message", "role": "user", "content": [
+                    {"type": "input_text", "text": "Spawn one explorer agent to inspect this repo"}
+                ]}
+            ]
+        });
+        let result = compress_messages(&mut payload, &test_config());
+        assert!(
+            result.is_none(),
+            "Codex user-only turns must forward original JSON bytes (deferred tools)"
+        );
+    }
 
     #[test]
     fn test_responses_exec_command_hint_drives_detection() {

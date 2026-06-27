@@ -384,53 +384,55 @@ mod tests {
 
     #[test]
     fn test_detect_openai_format() {
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "model": "gpt-4",
             "messages": [
                 {"role": "user", "content": "hello world"},
-                {"role": "tool", "content": "some tool output with enough text to compress"}
+                {"role": "tool", "content": "On branch main\nChanges not staged for commit:\n  modified: src/app.ts\n  modified: src/utils.ts\n  modified: package.json\n  modified: Cargo.toml\n  modified: tests/test.rs\n  modified: README.md\n  modified: src/main.rs\n  modified: src/lib.rs"}
             ]
         });
-        let result = compress_messages(&mut payload.clone(), &test_config());
-        assert!(result.is_some(), "OpenAI format should be detected");
+        let result = compress_messages(&mut payload, &test_config());
+        assert!(result.is_some(), "OpenAI format should compress tool output");
     }
 
     #[test]
     fn test_detect_anthropic_format() {
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "model": "claude-3-opus",
             "messages": [
-                {"role": "user", "content": [{"type": "text", "text": "hello"}]},
-                {"role": "user", "content": [{"type": "tool_result", "content": "tool output"}]}
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "git status"}}
+                ]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "On branch main\nChanges:\n  modified: src/app.ts\n  modified: src/utils.ts\n  modified: package.json\n  modified: Cargo.toml\n  modified: tests/test.rs\n  modified: README.md"}]}
             ]
         });
-        let result = compress_messages(&mut payload.clone(), &test_config());
-        assert!(result.is_some(), "Anthropic format should be detected");
+        let result = compress_messages(&mut payload, &test_config());
+        assert!(result.is_some(), "Anthropic format should compress tool output");
     }
 
     #[test]
     fn test_detect_gemini_format() {
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "contents": [
-                {"role": "user", "parts": [{"text": "hello"}]},
-                {"role": "model", "parts": [{"text": "response"}]}
+                {"role": "user", "parts": [{"text": "please help me with this task that requires a lot of text for compression testing purposes"}]},
+                {"role": "function", "parts": [{"functionResponse": {"name": "Bash"}, "text": "./src/main.rs\n./src/lib.rs\n./Cargo.toml\n./README.md\n"}]}
             ]
         });
-        let result = compress_messages(&mut payload.clone(), &test_config());
-        assert!(result.is_some(), "Gemini format should be detected");
+        let result = compress_messages(&mut payload, &test_config());
+        assert!(result.is_some(), "Gemini format should compress tool output");
     }
 
     #[test]
     fn test_detect_responses_api_format() {
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "model": "gpt-4",
             "input": [
-                {"role": "user", "content": "hello"},
-                {"type": "function_call_output", "output": "tool output"}
+                {"type": "function_call", "call_id": "c1", "name": "exec_command", "arguments": "{\"cmd\":\"git status\"}"},
+                {"type": "function_call_output", "call_id": "c1", "output": "On branch main\nChanges not staged for commit:\n  modified: src/app.ts\n  modified: src/utils.ts\n  modified: package.json\n  modified: Cargo.toml\n  modified: tests/test.rs\n  modified: README.md\n  modified: src/main.rs\n  modified: src/lib.rs"}
             ]
         });
-        let result = compress_messages(&mut payload.clone(), &test_config());
-        assert!(result.is_some(), "Responses API format should be detected");
+        let result = compress_messages(&mut payload, &test_config());
+        assert!(result.is_some(), "Responses API format should compress tool output");
     }
 
     #[test]
@@ -487,11 +489,13 @@ mod tests {
     fn test_responses_api_compression() {
         let mut payload = serde_json::json!({
             "input": [
-                {"type": "function_call_output", "output": "On branch main\nChanges:\n  modified: src/app.ts\n  modified: src/utils.ts\n  modified: package.json\n  modified: Cargo.toml\n  modified: tests/test.rs\n  modified: README.md\n  modified: src/main.rs"}
+                {"type": "function_call", "call_id": "c1", "name": "exec_command", "arguments": "{\"cmd\":\"git status\"}"},
+                {"type": "function_call_output", "call_id": "c1", "output": "On branch main\nChanges:\n  modified: src/app.ts\n  modified: src/utils.ts\n  modified: package.json\n  modified: Cargo.toml\n  modified: tests/test.rs\n  modified: README.md\n  modified: src/main.rs"}
             ]
         });
         let result = compress_messages(&mut payload, &test_config()).unwrap();
         assert!(result.original_tokens > 0);
+        assert!(result.modified);
     }
 
     #[test]

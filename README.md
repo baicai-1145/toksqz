@@ -85,7 +85,7 @@ The generated formula expects a tap such as `baicai-1145/homebrew-tap`.
 | `SQUEEZE_HOST` | `127.0.0.1` | Listen host (`0.0.0.0` for containers) |
 | `SQUEEZE_PORT` | `8787` | Local listen port |
 | `SQUEEZE_RTK` | `true` | Enable RTK compression for tool output |
-| `SQUEEZE_CAVEMAN` | `true` | Enable Caveman compression for user messages (`true`/`false`/intensity level) |
+| `SQUEEZE_CAVEMAN` | `false` | Enable Caveman compression for user messages (`true`/`false`/intensity level). Off by default: for coding agents the savings are marginal (<1%) and it rewrites instruction text, which can alter model behavior |
 | `SQUEEZE_CAVEMAN_LEVEL` | `lite` | Caveman intensity: `lite`, `standard`, `aggressive` |
 | `SQUEEZE_LOG` | `true` | Print compression stats to stdout |
 | `SQUEEZE_GROUPING` | `true` | Enable output grouping/aggregation |

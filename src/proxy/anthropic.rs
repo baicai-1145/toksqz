@@ -65,7 +65,7 @@ pub(crate) fn compress(payload: &mut Value, config: &crate::Config) -> Option<Co
             Value::String(s) if !s.is_empty() => {
                 let text = s.clone();
                 if role == "user" {
-                    let (compressed, orig, new) = compress_user_text_return(&text, config);
+                    let (compressed, orig, new) = compress_user_text_return(&text, config, &mut acc);
                     acc.original_tokens += orig;
                     acc.compressed_tokens += new;
                     *s = compressed;
@@ -95,7 +95,7 @@ pub(crate) fn compress(payload: &mut Value, config: &crate::Config) -> Option<Co
                                     let text = s.to_string();
                                     if role == "user" {
                                         let (compressed, orig, new) =
-                                            compress_user_text_return(&text, config);
+                                            compress_user_text_return(&text, config, &mut acc);
                                         acc.original_tokens += orig;
                                         acc.compressed_tokens += new;
                                         *text_val = Value::String(compressed);
@@ -115,10 +115,8 @@ pub(crate) fn compress(payload: &mut Value, config: &crate::Config) -> Option<Co
         }
     }
 
-    Some(acc)
+    acc.finish()
 }
-
-/// Compress Anthropic content that may be a string or an array of blocks.
 fn compress_content(
     content: &mut Value,
     is_tool: bool,
@@ -132,7 +130,7 @@ fn compress_content(
             if is_tool {
                 *s = compress_tool_output(&text, hint, config, acc);
             } else {
-                let (compressed, orig, new) = compress_user_text_return(&text, config);
+                let (compressed, orig, new) = compress_user_text_return(&text, config, acc);
                 acc.original_tokens += orig;
                 acc.compressed_tokens += new;
                 *s = compressed;
@@ -148,7 +146,7 @@ fn compress_content(
                     let compressed = compress_tool_output(&t, hint, config, acc);
                     block["text"] = Value::String(compressed);
                 } else {
-                    let (compressed, orig, new) = compress_user_text_return(&t, config);
+                    let (compressed, orig, new) = compress_user_text_return(&t, config, acc);
                     acc.original_tokens += orig;
                     acc.compressed_tokens += new;
                     block["text"] = Value::String(compressed);

@@ -32,8 +32,11 @@ impl Config {
         let port = std::env::var("SQUEEZE_PORT")
             .ok().and_then(|v| v.parse().ok()).unwrap_or(8787);
         let rtk_enabled = std::env::var("SQUEEZE_RTK").unwrap_or_else(|_| "true".into()) != "false";
+        // Caveman defaults OFF: for coding agents its savings are marginal (<1%)
+        // and it rewrites user/instruction text, risking behavior changes (e.g.
+        // breaking Codex deferred tools). Opt in via SQUEEZE_CAVEMAN=true|<level>.
         let caveman_level = match std::env::var("SQUEEZE_CAVEMAN")
-            .unwrap_or_else(|_| "true".into()).as_str()
+            .unwrap_or_else(|_| "false".into()).as_str()
         {
             "false" => None,
             other => Some(
@@ -63,8 +66,8 @@ fn handle_cli_args() -> bool {
                    SQUEEZE_UPSTREAM        Upstream API base URL\n\
                    SQUEEZE_HOST            Listen host (default: 127.0.0.1)\n\
                    SQUEEZE_PORT            Listen port (default: 8787)\n\
-                   SQUEEZE_RTK             Enable RTK compression\n\
-                   SQUEEZE_CAVEMAN         Enable Caveman compression\n\
+                   SQUEEZE_RTK             Enable RTK compression (default: true)\n\
+                   SQUEEZE_CAVEMAN         Enable Caveman compression (default: false)\n\
                    SQUEEZE_CAVEMAN_LEVEL   Caveman intensity level\n\
                    SQUEEZE_LOG             Print compression stats\n\
                    SQUEEZE_GROUPING        Enable output grouping\n\

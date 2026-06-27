@@ -14,6 +14,10 @@ pub(crate) struct CompressResult {
     pub compressed_tokens: usize,
     pub filters_applied: Vec<String>,
     pub per_command: Vec<compression::stats::CommandStats>,
+    /// True when any message text was actually changed. When false the proxy
+    /// must forward the original request bytes unchanged — re-serializing JSON
+    /// can break Codex deferred tools (`spawn_agent`, `tool_search`, …).
+    pub modified: bool,
 }
 
 impl CompressResult {
@@ -23,7 +27,18 @@ impl CompressResult {
             compressed_tokens: 0,
             filters_applied: Vec::new(),
             per_command: Vec::new(),
+            modified: false,
         }
+    }
+
+    pub(crate) fn finish(self) -> Option<Self> {
+        if self.modified { Some(self) } else { None }
+    }
+}
+
+pub(crate) fn mark_modified_if_changed(acc: &mut CompressResult, before: &str, after: &str) {
+    if before != after {
+        acc.modified = true;
     }
 }
 
@@ -80,16 +95,22 @@ pub(crate) fn compress_tool_output(
         compressed_tokens: new_tokens,
     });
     acc.compressed_tokens += new_tokens;
+    mark_modified_if_changed(acc, content, &result.text);
     result.text
 }
 
 /// Compress user-authored text via the Caveman engine (no-op when disabled).
 /// Returns `(compressed, original_tokens, new_tokens)`.
-pub(crate) fn compress_user_text_return(content: &str, config: &crate::Config) -> (String, usize, usize) {
+pub(crate) fn compress_user_text_return(
+    content: &str,
+    config: &crate::Config,
+    acc: &mut CompressResult,
+) -> (String, usize, usize) {
     let orig = estimate_tokens(content);
     if let Some(ref level) = config.caveman_level {
         let compressed = compression::caveman_compress(content, level);
         let new_tokens = estimate_tokens(&compressed);
+        mark_modified_if_changed(acc, content, &compressed);
         (compressed, orig, new_tokens)
     } else {
         (content.to_string(), orig, orig)

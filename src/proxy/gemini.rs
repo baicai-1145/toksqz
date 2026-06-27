@@ -83,7 +83,7 @@ pub(crate) fn compress(payload: &mut Value, config: &crate::Config) -> Option<Co
                 let compressed = compress_tool_output(&text, hint.as_deref(), config, &mut acc);
                 part["text"] = Value::String(compressed);
             } else if role == "user" {
-                let (compressed, orig, new) = compress_user_text_return(&text, config);
+                let (compressed, orig, new) = compress_user_text_return(&text, config, &mut acc);
                 acc.original_tokens += orig;
                 acc.compressed_tokens += new;
                 if config.log_enabled && compressed.len() < text.len() {
@@ -98,7 +98,7 @@ pub(crate) fn compress(payload: &mut Value, config: &crate::Config) -> Option<Co
         }
     }
 
-    Some(acc)
+    acc.finish()
 }
 
 #[cfg(test)]
@@ -135,8 +135,8 @@ mod tests {
                 ]}
             ]
         });
-        // Should not panic and should still produce a result (hint suppressed).
+        // Hint suppressed and output too small to change — forward original bytes.
         let result = compress_messages(&mut payload, &test_config());
-        assert!(result.is_some());
+        assert!(result.is_none());
     }
 }
